@@ -33,6 +33,8 @@ public static class DatabaseMigrator
     {
         ValidateOptions(options);
 
+        var scriptsToMark = ResolveScriptsToMark(options);
+
         // =================================================
         // 0. ENSURE DATABASE
         // =================================================
@@ -46,6 +48,19 @@ public static class DatabaseMigrator
         // =================================================
         // 1. MIGRATIONS
         // =================================================
+
+        if (scriptsToMark.Count > 0)
+        {
+            // Seleciona somente os scripts informados; os demais continuam pendentes.
+            var result = BuildMigrationsUpgrader(options, scriptsToMark).MarkAsExecuted();
+            if (!result.Successful)
+            {
+                throw new DatabaseMigrationException(
+                    "Migration adoption",
+                    result.ErrorScript?.Name ?? string.Join(", ", scriptsToMark),
+                    result.Error);
+            }
+        }
 
         var migrationsUpgrader =
             BuildMigrationsUpgrader(options);
@@ -89,8 +104,35 @@ public static class DatabaseMigrator
             "Programmable Objects");
     }
 
+    private static HashSet<string> ResolveScriptsToMark(DbUpMigratorOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options.ScriptsToMarkAsExecuted);
+
+        var resources = new HashSet<string>(
+            options.ScriptAssembly.GetManifestResourceNames(), StringComparer.Ordinal);
+        var selected = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var name in options.ScriptsToMarkAsExecuted)
+        {
+            var resourceName = options.MigrationsPrefix + name;
+            if (string.IsNullOrWhiteSpace(name)
+                || !IsMigration(resourceName, options.MigrationsPrefix)
+                || !resources.Contains(resourceName))
+            {
+                throw new ArgumentException(
+                    $"Migration '{name}' was not found as embedded resource '{resourceName}'.",
+                    nameof(options.ScriptsToMarkAsExecuted));
+            }
+
+            selected.Add(resourceName);
+        }
+
+        return selected;
+    }
+
     private static UpgradeEngine BuildMigrationsUpgrader(
-        DbUpMigratorOptions options)
+        DbUpMigratorOptions options,
+        HashSet<string>? scriptsToMark = null)
     {
         return DeployChanges.To
             .SqlDatabase(
@@ -101,7 +143,8 @@ public static class DatabaseMigrator
                 scriptName =>
                     IsMigration(
                         scriptName,
-                        options.MigrationsPrefix))
+                        options.MigrationsPrefix)
+                    && (scriptsToMark == null || scriptsToMark.Contains(scriptName)))
 
             .LogToConsole()
 

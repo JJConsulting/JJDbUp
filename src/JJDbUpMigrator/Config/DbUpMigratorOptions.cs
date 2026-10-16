@@ -30,6 +30,9 @@ public sealed class DbUpMigratorOptions
     public bool EnsureDatabase { get; set; } =
         true;
 
+    // Nomes relativos a MigrationsPrefix, incluindo .sql. Use somente para scripts ja aplicados.
+    public string[] ScriptsToMarkAsExecuted { get; set; } = Array.Empty<string>();
+
     public string MigrationsPrefix
     {
         get
