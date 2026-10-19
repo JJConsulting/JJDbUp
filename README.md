@@ -1,4 +1,4 @@
-# JJConsulting.DbUp.Migrations
+# JJConsulting.DbUp
 
 A .NET 10 library for SQL Server migrations and versionable objects: functions, views, and stored procedures.
 It uses DbUp to execute scripts and track migrations, and DbUpX to detect object changes by hash and resolve
@@ -35,7 +35,7 @@ For example:
 
 ## Set up your application (SQL Server)
 
-Reference `src/JJConsulting.DbUp.Migrations/JJConsulting.DbUp.Migrations.csproj`. Put the scripts in the consuming
+Reference `src/JJConsulting.DbUp/JJConsulting.DbUp.csproj`. Put the scripts in the consuming
 project:
 
 ```text
@@ -83,8 +83,8 @@ Set the connection and migration options in `appsettings.json`:
 Bind `DbUpOptions` through `IOptions` and migrate before the app starts serving requests:
 
 ```csharp
-using JJConsulting.DbUp.Migrations;
-using JJConsulting.DbUp.Migrations.Configuration;
+using JJConsulting.DbUp;
+using JJConsulting.DbUp.Configuration;
 using Microsoft.Extensions.Options;
 
 builder.Services.AddDbUpMigrations(builder.Configuration);

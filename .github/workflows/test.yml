@@ -28,10 +28,10 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Restore
-        run: dotnet restore JJConsulting.DbUp.Migrations.slnx
+        run: dotnet restore JJConsulting.DbUp.slnx
 
       - name: Build
-        run: dotnet build JJConsulting.DbUp.Migrations.slnx --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+        run: dotnet build JJConsulting.DbUp.slnx --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
 
       - name: Test with SQL Server Testcontainers
-        run: dotnet test --solution JJConsulting.DbUp.Migrations.slnx --configuration Release --no-build --no-restore --report-xunit-trx --results-directory TestResults
+        run: dotnet test --solution JJConsulting.DbUp.slnx --configuration Release --no-build --no-restore --report-xunit-trx --results-directory TestResults
