@@ -14,11 +14,7 @@ env:
   PROJECT: src/JJConsulting.DbUp/JJConsulting.DbUp.csproj
 
 jobs:
-  test:
-    uses: ./.github/workflows/test.yml
-
   build:
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -40,6 +36,9 @@ jobs:
 
       - name: Build
         run: dotnet build JJConsulting.DbUp.slnx --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Test with SQL Server Testcontainers
+        run: dotnet test --solution JJConsulting.DbUp.slnx --configuration Release --no-build --no-restore --report-xunit-trx --results-directory TestResults
 
       - name: Pack
         run: dotnet pack "$PROJECT" --configuration Release --no-build --output artifacts -p:ContinuousIntegrationBuild=true
