@@ -1,15 +1,11 @@
 ﻿using DbUp;
 using DbUp.Engine;
 using DbUpX;
-using JJDbUpMigrator.Config;
 using Microsoft.Data.SqlClient;
-using System;
-using System.Collections.Generic;
 using System.Reflection;
-using System.Text;
+using JJConsulting.DbUp.Migrations.Configuration;
 
-namespace JJDbUpMigrator;
-
+namespace JJConsulting.DbUp.Migrations;
 
 public static class DatabaseMigrator
 {
@@ -18,22 +14,23 @@ public static class DatabaseMigrator
         Assembly scriptAssembly,
         string baseNamespace)
     {
-        var options = new DbUpMigratorOptions
+        var options = new DbUpOptions
         {
-            ConnectionString = connectionString,
-            ScriptAssembly = scriptAssembly,
             BaseNamespace = baseNamespace
         };
 
-        Migrate(options);
+        Migrate(connectionString, scriptAssembly, options);
     }
 
     public static void Migrate(
-        DbUpMigratorOptions options)
+        string connectionString,
+        Assembly scriptAssembly,
+        DbUpOptions options)
     {
-        ValidateOptions(options);
+        ValidateOptions(connectionString, scriptAssembly, options);
+        ValidateScripts(scriptAssembly, options);
 
-        var scriptsToMark = ResolveScriptsToMark(options);
+        var scriptsToMark = ResolveScriptsToMark(scriptAssembly, options);
 
         // =================================================
         // 0. ENSURE DATABASE
@@ -41,8 +38,7 @@ public static class DatabaseMigrator
 
         if (options.EnsureDatabase)
         {
-            EnsureDatabase.For.SqlDatabase(
-                options.ConnectionString);
+            EnsureDatabase.For.SqlDatabase(connectionString);
         }
 
         // =================================================
@@ -52,7 +48,8 @@ public static class DatabaseMigrator
         if (scriptsToMark.Count > 0)
         {
             // Seleciona somente os scripts informados; os demais continuam pendentes.
-            var result = BuildMigrationsUpgrader(options, scriptsToMark).MarkAsExecuted();
+            var result = BuildMigrationsUpgrader(connectionString, scriptAssembly, options, scriptsToMark)
+                .MarkAsExecuted();
             if (!result.Successful)
             {
                 throw new DatabaseMigrationException(
@@ -63,7 +60,7 @@ public static class DatabaseMigrator
         }
 
         var migrationsUpgrader =
-            BuildMigrationsUpgrader(options);
+            BuildMigrationsUpgrader(connectionString, scriptAssembly, options);
 
         /*
          * Precisamos verificar antes do PerformUpgrade.
@@ -86,7 +83,7 @@ public static class DatabaseMigrator
         if (hasPendingMigrations)
         {
             ClearProgrammableObjectJournal(
-                options.ConnectionString,
+                connectionString,
                 options.Schema,
                 options.ProgrammableObjectJournal);
         }
@@ -96,20 +93,19 @@ public static class DatabaseMigrator
         // =================================================
 
         var programmableObjectsUpgrader =
-            BuildProgrammableObjectsUpgrader(
-                options);
+            BuildProgrammableObjectsUpgrader(connectionString, scriptAssembly, options);
 
         UpgradeOrThrow(
             programmableObjectsUpgrader,
             "Programmable Objects");
     }
 
-    private static HashSet<string> ResolveScriptsToMark(DbUpMigratorOptions options)
+    private static HashSet<string> ResolveScriptsToMark(Assembly scriptAssembly, DbUpOptions options)
     {
         ArgumentNullException.ThrowIfNull(options.ScriptsToMarkAsExecuted);
 
         var resources = new HashSet<string>(
-            options.ScriptAssembly.GetManifestResourceNames(), StringComparer.Ordinal);
+            scriptAssembly.GetManifestResourceNames(), StringComparer.Ordinal);
         var selected = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var name in options.ScriptsToMarkAsExecuted)
@@ -130,59 +126,66 @@ public static class DatabaseMigrator
         return selected;
     }
 
+    private static void ValidateScripts(Assembly scriptAssembly, DbUpOptions options)
+    {
+        if (scriptAssembly.GetManifestResourceNames().Any(name =>
+                IsMigration(name, options.MigrationsPrefix)
+                || IsProgrammableObject(name, options.ProgrammableObjectsPrefix)))
+        {
+            return;
+        }
+
+        throw new ArgumentException(
+            $"No embedded SQL scripts were found in assembly '{scriptAssembly.GetName().Name}' " +
+            $"under '{options.MigrationsPrefix}' or '{options.ProgrammableObjectsPrefix}'.",
+            nameof(options));
+    }
+
     private static UpgradeEngine BuildMigrationsUpgrader(
-        DbUpMigratorOptions options,
+        string connectionString,
+        Assembly scriptAssembly,
+        DbUpOptions options,
         HashSet<string>? scriptsToMark = null)
     {
         return DeployChanges.To
             .SqlDatabase(
-                options.ConnectionString)
-
+                connectionString)
             .WithScriptsEmbeddedInAssembly(
-                options.ScriptAssembly,
+                scriptAssembly,
                 scriptName =>
                     IsMigration(
                         scriptName,
                         options.MigrationsPrefix)
                     && (scriptsToMark == null || scriptsToMark.Contains(scriptName)))
-
             .LogToConsole()
-
             .JournalToSqlTable(
                 options.Schema,
                 options.MigrationJournal)
-
             .WithTransaction()
-
             .Build();
     }
 
     private static UpgradeEngine BuildProgrammableObjectsUpgrader(
-        DbUpMigratorOptions options)
+        string connectionString,
+        Assembly scriptAssembly,
+        DbUpOptions options)
     {
         return DeployChanges.To
-            .SqlDatabase(options.ConnectionString)
-
+            .SqlDatabase(connectionString)
             .WithScriptsEmbeddedInAssembly(
-                options.ScriptAssembly,
+                scriptAssembly,
                 scriptName =>
                     IsProgrammableObject(
                         scriptName,
                         options.ProgrammableObjectsPrefix))
-
-            .WithScriptSorter(
-                scripts =>
-                    scripts.OrderByDependency(
-                        options.DependencyDirective))
-
+            .WithScriptSorter(scripts =>
+                scripts.OrderByDependency(
+                    options.DependencyDirective))
             .LogToConsole()
-
             .JournalToSqlWithHashing(
                 schemaName: options.Schema,
                 tableName: options.ProgrammableObjectJournal)
-
             .WithTransaction()
-
             .Build();
     }
 
@@ -198,10 +201,7 @@ public static class DatabaseMigrator
             return;
         }
 
-        var scriptName =
-            result.ErrorScript == null
-                ? null
-                : result.ErrorScript.Name;
+        var scriptName = result.ErrorScript?.Name;
 
         throw new DatabaseMigrationException(
             stage,
@@ -244,26 +244,24 @@ public static class DatabaseMigrator
         var qualifiedTable =
             quotedSchema + "." + quotedTable;
 
-        using (var connection =
-               new SqlConnection(connectionString))
+        using var connection =
+            new SqlConnection(connectionString);
+        connection.Open();
+
+        var sql =
+            "IF OBJECT_ID(@objectName, N'U') IS NOT NULL " +
+            "BEGIN " +
+            "DELETE FROM " + qualifiedTable + "; " +
+            "END";
+
+        using (var command =
+               new SqlCommand(sql, connection))
         {
-            connection.Open();
+            command.Parameters.AddWithValue(
+                "@objectName",
+                schema + "." + table);
 
-            var sql =
-                "IF OBJECT_ID(@objectName, N'U') IS NOT NULL " +
-                "BEGIN " +
-                "DELETE FROM " + qualifiedTable + "; " +
-                "END";
-
-            using (var command =
-                   new SqlCommand(sql, connection))
-            {
-                command.Parameters.AddWithValue(
-                    "@objectName",
-                    schema + "." + table);
-
-                command.ExecuteNonQuery();
-            }
+            command.ExecuteNonQuery();
         }
     }
 
@@ -317,7 +315,9 @@ public static class DatabaseMigrator
     }
 
     private static void ValidateOptions(
-        DbUpMigratorOptions options)
+        string connectionString,
+        Assembly scriptAssembly,
+        DbUpOptions options)
     {
         if (options == null)
         {
@@ -325,19 +325,16 @@ public static class DatabaseMigrator
                 nameof(options));
         }
 
-        if (string.IsNullOrWhiteSpace(
-                options.ConnectionString))
+        if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new ArgumentException(
-                "ConnectionString is required.",
-                nameof(options.ConnectionString));
+                "Connection string is required.",
+                nameof(connectionString));
         }
 
-        if (options.ScriptAssembly == null)
+        if (scriptAssembly == null)
         {
-            throw new ArgumentException(
-                "ScriptAssembly is required.",
-                nameof(options.ScriptAssembly));
+            throw new ArgumentNullException(nameof(scriptAssembly));
         }
 
         if (string.IsNullOrWhiteSpace(
