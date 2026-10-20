@@ -97,15 +97,12 @@ Install `JJConsulting.DbUp`. The library reads the same options as the CLI:
 using JJConsulting.DbUp;
 using JJConsulting.DbUp.Configuration;
 
-var options = new DbUpOptions { BaseNamespace = "Order.Api.Database", ScriptsPath = "Database" };
-var preparation = MigrationScriptService.GetScripts(options);
-if (!preparation.IsValid)
-{
-    Console.Error.WriteLine(preparation.Error);
-    return;
-}
+DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, "Order.Api.Database");
 
-DatabaseMigrator.Migrate(connectionString, preparation.Scripts);
+var options = new DbUpOptions { BaseNamespace = "Order.Api.Database", ScriptsPath = "Database" };
+
+// Or pass the configured options:
+DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, options);
 ```
 
 For embedded resources, configure their build action:
@@ -116,17 +113,6 @@ For embedded resources, configure their build action:
   <EmbeddedResource Include="Database/ProgrammableObjects/**/*.sql" />
 </ItemGroup>
 ```
-
-Prepare them with `MigrationScriptService.GetScripts(typeof(Program).Assembly, options)`; this ignores `ScriptsPath`.
-`MigrationScriptService.GetScripts(scripts, options)` also accepts `IEnumerable<SqlScript>`.
-Preparation returns either validated scripts or an error, without connecting to SQL Server. File access and assembly loading errors can still throw.
-
-Pass the prepared scripts to `DatabaseMigrator.Migrate`, `GetStatus`, or `MarkAsExecuted`, optionally with a custom logger.
-The same prepared scripts can be reused: discovery, validation, dependency ordering and adoption selection happen once, and execution uses the captured journal settings.
-The CLI's `validate` command uses preparation without executing anything.
-`AddDbUpMigrations(configuration)` binds the shared options.
-For adoption, set `ScriptsToMarkAsExecuted` to names relative to `Migrations`, including `.sql`, before preparation.
-An empty selection makes `MarkAsExecuted` a no-op; the CLI requires at least one selected migration.
 
 Default journals: `dbo.SchemaVersions` and `dbo.ProgrammableObjectVersions`. Customize them through `Schema`, `MigrationJournal`, and `ProgrammableObjectJournal`.
 The configured `Schema` is also passed to DbUp’s SQL Server executor, which creates it natively if missing before executing pending scripts. Adoption verifies the same schema through DbUp before writing journal entries, because `MarkAsExecuted` skips the normal upgrade verification. `EnsureDatabase` controls only database creation. `GetStatus` does not create schemas or journals.

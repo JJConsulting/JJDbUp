@@ -1,3 +1,4 @@
+using System.Reflection;
 using DbUp;
 using DbUp.Builder;
 using DbUp.Engine;
@@ -12,6 +13,37 @@ namespace JJConsulting.DbUp;
 
 public static class DatabaseMigrator
 {
+    /// <summary>Loads embedded scripts and applies them using the configured namespace.</summary>
+    public static void Migrate(string connectionString, Assembly scriptsAssembly, string baseNamespace)
+    {
+        Migrate(connectionString, scriptsAssembly, new DbUpOptions { BaseNamespace = baseNamespace });
+    }
+
+    /// <summary>Loads, validates and applies embedded scripts.</summary>
+    public static void Migrate(string connectionString, Assembly scriptsAssembly, DbUpOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentNullException.ThrowIfNull(scriptsAssembly);
+        ArgumentNullException.ThrowIfNull(options);
+        Migrate(connectionString, RequireScripts(MigrationScriptService.GetScripts(scriptsAssembly, options)));
+    }
+
+    /// <summary>Validates and applies explicitly supplied scripts.</summary>
+    public static void Migrate(string connectionString, IEnumerable<SqlScript> scripts, DbUpOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentNullException.ThrowIfNull(scripts);
+        ArgumentNullException.ThrowIfNull(options);
+        Migrate(connectionString, RequireScripts(MigrationScriptService.GetScripts(scripts, options)));
+    }
+
+    private static MigrationScripts RequireScripts(MigrationScriptResult result)
+    {
+        if (!result.IsValid)
+            throw new ArgumentException(result.Error, "options");
+        return result.Scripts;
+    }
+
     /// <summary>Applies a previously validated set of scripts without repeating discovery or validation.</summary>
     public static void Migrate(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
     {
