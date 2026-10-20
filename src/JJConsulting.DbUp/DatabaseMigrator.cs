@@ -20,10 +20,12 @@ public static class DatabaseMigrator
         log ??= new ConsoleUpgradeLog();
 
         EnsureExists(connectionString, scripts.Options, log);
+        // Marks only the selected scripts as executed; the others remain pending.
         MarkAsExecuted(connectionString, scripts.Options, log, scripts.ScriptsToMark);
         var hasPendingMigrations = ApplyMigrations(connectionString, scripts.Options, log, scripts.Migrations);
 
-        // Invalidate before the object transaction so a failed stage can retry every object.
+        // Clear the persisted hashes before the object transaction. If that stage fails,
+        // the next run must still refresh every object after the committed schema change.
         if (hasPendingMigrations)
             ClearProgrammableObjectJournal(connectionString, scripts.Options, log);
 
@@ -100,6 +102,12 @@ public static class DatabaseMigrator
     private static bool ApplyMigrations(string connectionString, DbUpOptions options, IUpgradeLog log, IReadOnlyCollection<SqlScript> scripts)
     {
         var engine = CreateMigrationEngine(connectionString, options, log, scripts);
+        /*
+         * Check for pending migrations before PerformUpgrade.
+         *
+         * If any migrations are pending, force all programmable
+         * objects to run again after the migrations complete.
+         */
         var hasPendingMigrations = engine.IsUpgradeRequired();
         UpgradeOrThrow(engine, "Migrations");
         return hasPendingMigrations;
