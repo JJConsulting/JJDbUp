@@ -129,4 +129,5 @@ For adoption, set `ScriptsToMarkAsExecuted` to names relative to `Migrations`, i
 An empty selection makes `MarkAsExecuted` a no-op; the CLI requires at least one selected migration.
 
 Default journals: `dbo.SchemaVersions` and `dbo.ProgrammableObjectVersions`. Customize them through `Schema`, `MigrationJournal`, and `ProgrammableObjectJournal`.
+The configured `Schema` is also passed to DbUp’s SQL Server executor, which creates it natively if missing before executing pending scripts. Adoption verifies the same schema through DbUp before writing journal entries, because `MarkAsExecuted` skips the normal upgrade verification. `EnsureDatabase` controls only database creation. `GetStatus` does not create schemas or journals.
 Migrations and objects use separate transactions: an object failure does not roll back completed migrations. Script failures raise `DatabaseMigrationException`.
