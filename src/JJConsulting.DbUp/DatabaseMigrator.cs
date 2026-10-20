@@ -129,6 +129,14 @@ public static class DatabaseMigrator
         if (scripts.Count == 0)
             return;
 
+        // MarkAsExecuted skips DbUp's normal schema verification.
+        var configuration = DeployChanges.To.SqlDatabase(connectionString, options.Schema)
+            .WithScripts(Array.Empty<SqlScript>()).LogTo(log).BuildConfiguration();
+        using (configuration.ConnectionManager.OperationStarting(log, []))
+        {
+            configuration.ScriptExecutor.VerifySchema();
+        }
+
         var result = CreateMigrationEngine(connectionString, options, log, scripts).MarkAsExecuted();
         if (!result.Successful)
             throw new DatabaseMigrationException("Migration adoption", result.ErrorScript?.Name, result.Error);
@@ -204,19 +212,19 @@ public static class DatabaseMigrator
     }
 
     private static UpgradeEngine CreateMigrationEngine(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts) =>
-        CreateBuilder(connectionString, log, scripts).WithScriptSorter(items => items).JournalToSqlTable(options.Schema, options.MigrationJournal).Build();
+        CreateBuilder(connectionString, options, log, scripts).WithScriptSorter(items => items).JournalToSqlTable(options.Schema, options.MigrationJournal).Build();
 
     private static UpgradeEngine CreateProgrammableObjectEngine(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts)
     {
-        return CreateBuilder(connectionString, log, scripts)
+        return CreateBuilder(connectionString, options, log, scripts)
             .WithScriptSorter(items => items)
             .JournalToSqlWithHashing(schemaName: options.Schema, tableName: options.ProgrammableObjectJournal)
             .Build();
     }
 
-    private static UpgradeEngineBuilder CreateBuilder(string connectionString, IUpgradeLog log, IEnumerable<SqlScript> scripts)
+    private static UpgradeEngineBuilder CreateBuilder(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts)
     {
-        return DeployChanges.To.SqlDatabase(connectionString).WithScripts(scripts).LogTo(log).WithTransaction();
+        return DeployChanges.To.SqlDatabase(connectionString, options.Schema).WithScripts(scripts).LogTo(log).WithTransaction();
     }
 
     private static void UpgradeOrThrow(UpgradeEngine engine, string stage)
