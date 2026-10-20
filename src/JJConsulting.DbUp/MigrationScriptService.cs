@@ -114,7 +114,18 @@ public static class MigrationScriptService
             Migrations = migrations,
             ProgrammableObjects = objects,
             ScriptsToMark = scriptsToMark,
-            Options = options
+            // Prepared scripts retain the settings that were validated, even if the caller reuses its options.
+            Options = new DbUpOptions
+            {
+                ScriptsPath = options.ScriptsPath,
+                BaseNamespace = options.BaseNamespace,
+                Schema = options.Schema,
+                MigrationJournal = options.MigrationJournal,
+                ProgrammableObjectJournal = options.ProgrammableObjectJournal,
+                DependencyDirective = options.DependencyDirective,
+                EnsureDatabase = options.EnsureDatabase,
+                ScriptsToMarkAsExecuted = [.. options.ScriptsToMarkAsExecuted]
+            }
         });
     }
 
