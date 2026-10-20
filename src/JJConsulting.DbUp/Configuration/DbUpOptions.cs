@@ -4,6 +4,8 @@ public sealed class DbUpOptions
 {
     public const string SectionName = "DatabaseMigrations";
 
+    public string? ScriptsPath { get; set; }
+
     public string BaseNamespace { get; set; } = string.Empty;
 
     public string Schema { get; set; } = "dbo";

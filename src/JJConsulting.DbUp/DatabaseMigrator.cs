@@ -1,94 +1,127 @@
-using System.Reflection;
 using DbUp;
+using DbUp.Builder;
 using DbUp.Engine;
 using DbUp.Engine.Output;
 using DbUp.SqlServer;
 using DbUpX;
 using JJConsulting.DbUp.Configuration;
 using JJConsulting.DbUp.Exceptions;
+using Microsoft.Data.SqlClient;
 
 namespace JJConsulting.DbUp;
 
 public static class DatabaseMigrator
 {
-    public static void Migrate(string connectionString, Assembly scriptsAssembly, string baseNamespace)
-    {
-        Migrate(connectionString, scriptsAssembly, new DbUpOptions { BaseNamespace = baseNamespace });
-    }
-
-    public static void Migrate(string connectionString, Assembly scriptsAssembly, DbUpOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(scriptsAssembly);
-        
-        ValidateOptions(options);
-        var scripts = scriptsAssembly.GetManifestResourceNames()
-            .Where(name => IsScript(name, options.MigrationsPrefix) || IsScript(name, options.ProgrammableObjectsPrefix))
-            .Select(name =>
-            {
-                using var stream = scriptsAssembly.GetManifestResourceStream(name)!;
-                using var reader = new StreamReader(stream);
-                return new SqlScript(name, reader.ReadToEnd());
-            }).ToArray();
-        Migrate(connectionString, scripts, options);
-    }
-
-    /// <summary>Runs explicitly supplied scripts with the same naming, hashing, and dependency rules as embedded scripts.</summary>
-    public static void Migrate(string connectionString, IEnumerable<SqlScript> scripts, DbUpOptions options)
+    /// <summary>Applies a previously validated set of scripts without repeating discovery or validation.</summary>
+    public static void Migrate(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scripts);
-        
-        ValidateOptions(options);
-        var allScripts = scripts.ToArray();
-        var migrations = allScripts.Where(s => IsScript(s.Name, options.MigrationsPrefix))
-            .OrderBy(s => s.Name, StringComparer.Ordinal).ToArray();
-        var objects = allScripts.Where(s => IsScript(s.Name, options.ProgrammableObjectsPrefix)).ToArray();
-        if (migrations.Length == 0 && objects.Length == 0)
-            throw new ArgumentException("No SQL scripts were found under the configured migration or programmable object prefixes.", nameof(options));
+        log ??= new ConsoleUpgradeLog();
 
-        var scriptsToMark = ResolveScriptsToMark(migrations, options);
-        if (options.EnsureDatabase) EnsureDatabase.For.SqlDatabase(connectionString);
-
-        if (scriptsToMark.Length > 0)
-        {
-            var result = Build(connectionString, options, scriptsToMark, false).MarkAsExecuted();
-            if (!result.Successful)
-                throw new DatabaseMigrationException("Migration adoption", result.ErrorScript?.Name, result.Error);
-        }
-
-        var migrationsUpgrader = Build(connectionString, options, migrations, false);
-        var hasPendingMigrations = migrationsUpgrader.IsUpgradeRequired();
-        UpgradeOrThrow(migrationsUpgrader, "Migrations");
+        EnsureExists(connectionString, scripts.Options, log);
+        // Marks only the selected scripts as executed; the others remain pending.
+        MarkAsExecuted(connectionString, scripts.Options, log, scripts.ScriptsToMark);
+        var hasPendingMigrations = ApplyMigrations(connectionString, scripts.Options, log, scripts.Migrations);
 
         // Clear the persisted hashes before the object transaction. If that stage fails,
         // the next run must still refresh every object after the committed schema change.
-        if (hasPendingMigrations) ClearProgrammableObjectJournal(connectionString, options);
+        if (hasPendingMigrations)
+            ClearProgrammableObjectJournal(connectionString, scripts.Options, log);
 
-        UpgradeOrThrow(Build(connectionString, options, objects, true), "Programmable Objects");
+        ApplyProgrammableObjects(connectionString, scripts.Options, log, scripts.ProgrammableObjects);
     }
 
-    private static UpgradeEngine Build(string connectionString, DbUpOptions options, IEnumerable<SqlScript> scripts, bool objects)
+    /// <summary>Reads journals without creating a database or changing any persisted state.</summary>
+    public static DatabaseMigrationStatus GetStatus(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
     {
-        var builder = DeployChanges.To.SqlDatabase(connectionString)
-            .WithScripts(scripts)
-            .LogToConsole()
-            .WithTransaction();
-        if (objects)
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentNullException.ThrowIfNull(scripts);
+        log ??= new ConsoleUpgradeLog();
+        if (!DatabaseExists(connectionString))
         {
-            builder.WithScriptSorter(items => items.OrderByDependency(options.DependencyDirective));
-            builder.JournalToSqlWithHashing(schemaName: options.Schema, tableName: options.ProgrammableObjectJournal);
+            return new DatabaseMigrationStatus
+            {
+                DatabaseExists = false,
+                PendingMigrations = scripts.Migrations.Select(s => s.Name).ToArray(),
+                PendingObjects = scripts.ProgrammableObjects.Select(s => s.Name).ToArray()
+            };
+        }
+
+        var pendingMigrations = CreateMigrationEngine(connectionString, scripts.Options, log, scripts.Migrations).GetScriptsToExecute();
+        // Use DbUpX's own hash comparison when no schema migration forces a full refresh.
+        string[] pendingObjects;
+        if (pendingMigrations.Count > 0)
+        {
+            pendingObjects = scripts.ProgrammableObjects.Select(s => s.Name).ToArray();
         }
         else
         {
-            builder.JournalToSqlTable(options.Schema, options.MigrationJournal);
+            pendingObjects = CreateProgrammableObjectEngine(connectionString, scripts.Options, log, scripts.ProgrammableObjects)
+                .GetScriptsToExecute()
+                .Select(s => NameWithHash.TryParse(s.Name, out var name) ? name.PlainName : s.Name)
+                .ToArray();
         }
-        return builder.Build();
+
+        return new DatabaseMigrationStatus
+        {
+            DatabaseExists = true,
+            PendingMigrations = pendingMigrations.Select(s => s.Name).ToArray(),
+            PendingObjects = pendingObjects
+        };
     }
 
-    private static void ClearProgrammableObjectJournal(string connectionString, DbUpOptions options)
+    /// <summary>Records the prepared selection as executed; never executes SQL scripts.</summary>
+    public static void MarkAsExecuted(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentNullException.ThrowIfNull(scripts);
+        if (scripts.ScriptsToMark.Count == 0)
+            return;
+        log ??= new ConsoleUpgradeLog();
+        EnsureExists(connectionString, scripts.Options, log);
+        MarkAsExecuted(connectionString, scripts.Options, log, scripts.ScriptsToMark);
+    }
+
+    private static void EnsureExists(string connectionString, DbUpOptions options, IUpgradeLog log)
+    {
+        if (options.EnsureDatabase)
+            EnsureDatabase.For.SqlDatabase(connectionString, log);
+    }
+
+    private static void MarkAsExecuted(string connectionString, DbUpOptions options, IUpgradeLog log, IReadOnlyCollection<SqlScript> scripts)
+    {
+        if (scripts.Count == 0)
+            return;
+
+        var result = CreateMigrationEngine(connectionString, options, log, scripts).MarkAsExecuted();
+        if (!result.Successful)
+            throw new DatabaseMigrationException("Migration adoption", result.ErrorScript?.Name, result.Error);
+    }
+
+    private static bool ApplyMigrations(string connectionString, DbUpOptions options, IUpgradeLog log, IReadOnlyCollection<SqlScript> scripts)
+    {
+        var engine = CreateMigrationEngine(connectionString, options, log, scripts);
+        /*
+         * Check for pending migrations before PerformUpgrade.
+         *
+         * If any migrations are pending, force all programmable
+         * objects to run again after the migrations complete.
+         */
+        var hasPendingMigrations = engine.IsUpgradeRequired();
+        UpgradeOrThrow(engine, "Migrations");
+        return hasPendingMigrations;
+    }
+
+    private static void ApplyProgrammableObjects(string connectionString, DbUpOptions options, IUpgradeLog log, IReadOnlyCollection<SqlScript> scripts)
+    {
+        UpgradeOrThrow(CreateProgrammableObjectEngine(connectionString, options, log, scripts), "Programmable Objects");
+    }
+
+    private static void ClearProgrammableObjectJournal(string connectionString, DbUpOptions options, IUpgradeLog log)
     {
         var manager = new SqlConnectionManager(connectionString);
-        using var operation = manager.OperationStarting(new ConsoleUpgradeLog(), []);
+        using var operation = manager.OperationStarting(log, []);
         manager.ExecuteCommandsWithManagedConnection(factory =>
         {
             var parser = new SqlServerObjectParser();
@@ -103,40 +136,58 @@ public static class DatabaseMigrator
         });
     }
 
-    private static SqlScript[] ResolveScriptsToMark(SqlScript[] migrations, DbUpOptions options)
+    private static bool DatabaseExists(string connectionString)
     {
-        ArgumentNullException.ThrowIfNull(options.ScriptsToMarkAsExecuted);
-        var selected = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var name in options.ScriptsToMarkAsExecuted)
+        var settings = new SqlConnectionStringBuilder(connectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(settings.InitialCatalog, "InitialCatalog");
+        // A failed probe must not cache a login failure if a later migration creates the database.
+        settings.Pooling = false;
+        try
         {
-            var fullName = options.MigrationsPrefix + name;
-            if (string.IsNullOrWhiteSpace(name) || migrations.All(s => s.Name != fullName))
-                throw new ArgumentException($"Migration '{name}' was not found as SQL script '{fullName}'.", nameof(options.ScriptsToMarkAsExecuted));
-            selected.Add(fullName);
+            // Contained users can access the target database without being able to log in to master.
+            using var target = new SqlConnection(settings.ConnectionString);
+            target.Open();
+            return true;
         }
-        return migrations.Where(s => selected.Contains(s.Name)).ToArray();
+        catch (SqlException exception) when (exception.Number == 4060)
+        {
+            var databaseName = settings.InitialCatalog;
+            settings.InitialCatalog = "master";
+            using var connection = new SqlConnection(settings.ConnectionString);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT DB_ID(@name), HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DATABASE')";
+            command.Parameters.AddWithValue("@name", databaseName);
+            using var reader = command.ExecuteReader();
+            reader.Read();
+            if (reader.IsDBNull(0) && !reader.IsDBNull(1) && reader.GetInt32(1) == 1)
+                return false;
+
+            // Only report a missing database when visible metadata confirms its absence.
+            throw;
+        }
     }
 
-    private static void UpgradeOrThrow(UpgradeEngine upgrader, string stage)
+    private static UpgradeEngine CreateMigrationEngine(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts) =>
+        CreateBuilder(connectionString, log, scripts).JournalToSqlTable(options.Schema, options.MigrationJournal).Build();
+
+    private static UpgradeEngine CreateProgrammableObjectEngine(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts)
     {
-        var result = upgrader.PerformUpgrade();
+        return CreateBuilder(connectionString, log, scripts)
+            .WithScriptSorter(items => items)
+            .JournalToSqlWithHashing(schemaName: options.Schema, tableName: options.ProgrammableObjectJournal)
+            .Build();
+    }
+
+    private static UpgradeEngineBuilder CreateBuilder(string connectionString, IUpgradeLog log, IEnumerable<SqlScript> scripts)
+    {
+        return DeployChanges.To.SqlDatabase(connectionString).WithScripts(scripts).LogTo(log).WithTransaction();
+    }
+
+    private static void UpgradeOrThrow(UpgradeEngine engine, string stage)
+    {
+        var result = engine.PerformUpgrade();
         if (!result.Successful)
             throw new DatabaseMigrationException(stage, result.ErrorScript?.Name, result.Error);
-    }
-
-    private static bool IsScript(string name, string prefix)
-    {
-        return name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && 
-               name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static void ValidateOptions(DbUpOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.BaseNamespace, nameof(options.BaseNamespace));
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.Schema, nameof(options.Schema));
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.MigrationJournal, nameof(options.MigrationJournal));
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.ProgrammableObjectJournal, nameof(options.ProgrammableObjectJournal));
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.DependencyDirective, nameof(options.DependencyDirective));
     }
 }

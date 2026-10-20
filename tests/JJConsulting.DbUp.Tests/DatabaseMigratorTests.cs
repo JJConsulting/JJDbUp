@@ -6,7 +6,7 @@ using Microsoft.Data.SqlClient;
 namespace JJConsulting.DbUp.Tests;
 
 // One Testcontainers SQL Server per class; a separate database for each test.
-public sealed class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixture<SqlServerFixture>, IDisposable
+public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixture<SqlServerFixture>, IDisposable
 {
     private readonly string databaseName = "JJMigrations_" + Guid.NewGuid().ToString("N");
     private string ConnectionString => new SqlConnectionStringBuilder(fixture.Container.GetConnectionString())
@@ -25,7 +25,7 @@ public sealed class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixt
     [Fact]
     public void EmbeddedScripts_CreateTablesAndQueryableView()
     {
-        DatabaseMigrator.Migrate(ConnectionString, typeof(DatabaseMigratorTests).Assembly, Options);
+        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(typeof(DatabaseMigratorTests).Assembly, Options)));
 
         Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
@@ -170,7 +170,7 @@ public sealed class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixt
         options.ScriptsToMarkAsExecuted = ["V001_CreateTables.sql"];
         var pending = Migration("V002_Insert", "INSERT INTO Items VALUES (2, 'New');");
 
-        DatabaseMigrator.Migrate(ConnectionString, [InitialMigration, pending], options);
+        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, pending], options)));
 
         Assert.Equal(2L, Scalar<long>("SELECT COUNT_BIG(*) FROM Items"));
         Assert.Equal(2L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
@@ -238,22 +238,34 @@ public sealed class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixt
     }
 
     [Fact]
-    public void CustomJournalNames_AreQuotedAndPersistAcrossRuns()
+    public void PreparedSettings_PreserveQuotedJournalNamesAcrossRuns()
     {
         var options = Options;
         options.MigrationJournal = "Migration \" history";
         options.ProgrammableObjectJournal = "Object history";
         var scripts = new[] { InitialMigration, View("ItemNames", "Name") };
 
-        DatabaseMigrator.Migrate(ConnectionString, scripts, options);
-        DatabaseMigrator.Migrate(ConnectionString, scripts, options);
+        var prepared = Prepared(MigrationScriptService.GetScripts(scripts, options));
+        options.MigrationJournal = "Changed after preparation";
+        options.ProgrammableObjectJournal = "Changed after preparation";
+        options.DependencyDirective = "";
+        options.EnsureDatabase = false;
+
+        DatabaseMigrator.Migrate(ConnectionString, prepared);
+        DatabaseMigrator.Migrate(ConnectionString, prepared);
 
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM \"Migration \"\" history\""));
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM \"Object history\""));
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions"));
     }
 
-    private void Run(params SqlScript[] scripts) => DatabaseMigrator.Migrate(ConnectionString, scripts, Options);
+    private void Run(params SqlScript[] scripts) => DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(scripts, Options)));
+    private static MigrationScripts Prepared(MigrationScriptResult preparation)
+    {
+        Assert.True(preparation.IsValid, preparation.Error);
+        return preparation.Scripts;
+    }
+
     private static SqlScript Migration(string name, string sql) => new($"TestScripts.Migrations.{name}.sql", sql);
     private static SqlScript Object(string name, string sql) => new($"TestScripts.ProgrammableObjects.{name}.sql", sql);
 
