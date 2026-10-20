@@ -25,7 +25,7 @@ public static class DatabaseMigrator
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scriptsAssembly);
         ArgumentNullException.ThrowIfNull(options);
-        Migrate(connectionString, RequireScripts(MigrationScriptService.GetScripts(scriptsAssembly, options)));
+        Migrate(connectionString, RequireScripts(MigrationScriptService.GetScripts(scriptsAssembly, options)), options);
     }
 
     /// <summary>Validates and applies explicitly supplied scripts.</summary>
@@ -34,7 +34,7 @@ public static class DatabaseMigrator
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scripts);
         ArgumentNullException.ThrowIfNull(options);
-        Migrate(connectionString, RequireScripts(MigrationScriptService.GetScripts(scripts, options)));
+        Migrate(connectionString, RequireScripts(MigrationScriptService.GetScripts(scripts, options)), options);
     }
 
     private static MigrationScripts RequireScripts(MigrationScriptResult result)
@@ -45,30 +45,32 @@ public static class DatabaseMigrator
     }
 
     /// <summary>Applies a previously validated set of scripts without repeating discovery or validation.</summary>
-    public static void Migrate(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
+    public static void Migrate(string connectionString, MigrationScripts scripts, DbUpOptions options, IUpgradeLog? log = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scripts);
+        ArgumentNullException.ThrowIfNull(options);
         log ??= new ConsoleUpgradeLog();
 
-        EnsureExists(connectionString, scripts.Options, log);
+        EnsureExists(connectionString, options, log);
         // Marks only the selected scripts as executed; the others remain pending.
-        MarkAsExecuted(connectionString, scripts.Options, log, scripts.ScriptsToMark);
-        var hasPendingMigrations = ApplyMigrations(connectionString, scripts.Options, log, scripts.Migrations);
+        MarkAsExecuted(connectionString, options, log, scripts.ScriptsToMark);
+        var hasPendingMigrations = ApplyMigrations(connectionString, options, log, scripts.Migrations);
 
         // Clear the persisted hashes before the object transaction. If that stage fails,
         // the next run must still refresh every object after the committed schema change.
         if (hasPendingMigrations)
-            ClearProgrammableObjectJournal(connectionString, scripts.Options, log);
+            ClearProgrammableObjectJournal(connectionString, options, log);
 
-        ApplyProgrammableObjects(connectionString, scripts.Options, log, scripts.ProgrammableObjects);
+        ApplyProgrammableObjects(connectionString, options, log, scripts.ProgrammableObjects);
     }
 
     /// <summary>Reads journals without creating a database or changing any persisted state.</summary>
-    public static DatabaseMigrationStatus GetStatus(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
+    public static DatabaseMigrationStatus GetStatus(string connectionString, MigrationScripts scripts, DbUpOptions options, IUpgradeLog? log = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scripts);
+        ArgumentNullException.ThrowIfNull(options);
         log ??= new ConsoleUpgradeLog();
         if (!DatabaseExists(connectionString))
         {
@@ -80,7 +82,7 @@ public static class DatabaseMigrator
             };
         }
 
-        var pendingMigrations = CreateMigrationEngine(connectionString, scripts.Options, log, scripts.Migrations).GetScriptsToExecute();
+        var pendingMigrations = CreateMigrationEngine(connectionString, options, log, scripts.Migrations).GetScriptsToExecute();
         // Use DbUpX's own hash comparison when no schema migration forces a full refresh.
         string[] pendingObjects;
         if (pendingMigrations.Count > 0)
@@ -89,7 +91,7 @@ public static class DatabaseMigrator
         }
         else
         {
-            pendingObjects = CreateProgrammableObjectEngine(connectionString, scripts.Options, log, scripts.ProgrammableObjects)
+            pendingObjects = CreateProgrammableObjectEngine(connectionString, options, log, scripts.ProgrammableObjects)
                 .GetScriptsToExecute()
                 .Select(s => NameWithHash.TryParse(s.Name, out var name) ? name.PlainName : s.Name)
                 .ToArray();
@@ -104,15 +106,16 @@ public static class DatabaseMigrator
     }
 
     /// <summary>Records the prepared selection as executed; never executes SQL scripts.</summary>
-    public static void MarkAsExecuted(string connectionString, MigrationScripts scripts, IUpgradeLog? log = null)
+    public static void MarkAsExecuted(string connectionString, MigrationScripts scripts, DbUpOptions options, IUpgradeLog? log = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(scripts);
+        ArgumentNullException.ThrowIfNull(options);
         if (scripts.ScriptsToMark.Count == 0)
             return;
         log ??= new ConsoleUpgradeLog();
-        EnsureExists(connectionString, scripts.Options, log);
-        MarkAsExecuted(connectionString, scripts.Options, log, scripts.ScriptsToMark);
+        EnsureExists(connectionString, options, log);
+        MarkAsExecuted(connectionString, options, log, scripts.ScriptsToMark);
     }
 
     private static void EnsureExists(string connectionString, DbUpOptions options, IUpgradeLog log)
@@ -201,7 +204,7 @@ public static class DatabaseMigrator
     }
 
     private static UpgradeEngine CreateMigrationEngine(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts) =>
-        CreateBuilder(connectionString, log, scripts).JournalToSqlTable(options.Schema, options.MigrationJournal).Build();
+        CreateBuilder(connectionString, log, scripts).WithScriptSorter(items => items).JournalToSqlTable(options.Schema, options.MigrationJournal).Build();
 
     private static UpgradeEngine CreateProgrammableObjectEngine(string connectionString, DbUpOptions options, IUpgradeLog log, IEnumerable<SqlScript> scripts)
     {

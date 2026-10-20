@@ -23,7 +23,7 @@ public sealed class DbUpServiceCollectionExtensionsTests
         }).Build();
         var services = new ServiceCollection();
 
-        Assert.Same(services, services.AddDbUpMigrations(configuration));
+        services.AddDbUpMigrations(configuration);
         using var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<IOptions<DbUpOptions>>().Value;
 

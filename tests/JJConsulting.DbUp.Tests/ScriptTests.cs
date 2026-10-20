@@ -15,16 +15,33 @@ public sealed class ScriptTests : IDisposable
         File.WriteAllText(Path.Combine(_directory, "ProgrammableObjects", "Views", "Items.sql"), "SELECT 2;");
     }
 
-    [Fact]
-    public void DirectoryPreparation_PreservesNamespaceAndScriptNames()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DirectoryPreparation_PreservesNestedNamesContentsAndCaseInsensitiveExtensions(bool relativePath)
     {
-        var result = MigrationScriptService.GetScripts(new DbUpOptions { ScriptsPath = _directory, BaseNamespace = "App.Database" });
+        var nested = Path.Combine(_directory, "Migrations", "Nested");
+        Directory.CreateDirectory(nested);
+        const string sql = "-- Migração: ação\nSELECT N'ação';";
+        File.WriteAllText(Path.Combine(nested, "V002.SQL"), sql, System.Text.Encoding.Unicode);
+        File.WriteAllText(Path.Combine(nested, "ignored.txt"), "not SQL");
+        File.WriteAllText(Path.Combine(_directory, "V999.sql"), "not a migration");
+        Directory.CreateDirectory(Path.Combine(_directory, "Other", "Migrations"));
+        File.WriteAllText(Path.Combine(_directory, "Other", "Migrations", "V999.sql"), "not a migration");
+        var path = relativePath ? Path.GetRelativePath(Environment.CurrentDirectory, _directory) : _directory;
+
+        var result = MigrationScriptService.GetScripts(new DbUpOptions
+        {
+            ScriptsPath = path + Path.DirectorySeparatorChar,
+            BaseNamespace = "App.Database"
+        });
 
         Assert.True(result.IsValid, result.Error);
-        Assert.Null(result.Error);
-        Assert.Equal(2, result.Scripts.Count);
-        Assert.Equal("App.Database.Migrations.V001.sql", Assert.Single(result.Scripts.Migrations).Name);
+        Assert.Equal(["App.Database.Migrations.Nested.V002.SQL", "App.Database.Migrations.V001.sql"],
+            result.Scripts.Migrations.Select(script => script.Name));
         Assert.Equal("App.Database.ProgrammableObjects.Views.Items.sql", Assert.Single(result.Scripts.ProgrammableObjects).Name);
+        var script = Assert.Single(result.Scripts.Migrations, s => s.Name == "App.Database.Migrations.Nested.V002.SQL");
+        Assert.Equal(sql, script.Contents);
     }
 
     [Theory]
@@ -52,44 +69,31 @@ public sealed class ScriptTests : IDisposable
         AssertInvalid(MigrationScriptService.GetScripts(typeof(ScriptTests).Assembly, options));
     }
 
-    [Fact]
-    public void NamespaceFilterAndAdoption_UseRelativeCaseSensitiveMigrationNames()
+    [Theory]
+    [InlineData("V001.sql")]
+    [InlineData("B005.sql")]
+    public void NamespaceFilterAndAdoption_UseRelativeCaseSensitiveMigrationNames(string name)
     {
         SqlScript[] scripts =
         [
-            new("First.Migrations.V001.sql", "SELECT 1;"),
-            new("Second.Migrations.V001.sql", "SELECT 2;"),
+            new($"First.Migrations.{name}", "SELECT 1;"),
+            new($"Second.Migrations.{name}", "SELECT 2;"),
             new("First.Other.sql", "SELECT 3;")
         ];
-        var options = new DbUpOptions { BaseNamespace = "First", ScriptsToMarkAsExecuted = ["V001.sql"] };
+        var options = new DbUpOptions { BaseNamespace = "First", ScriptsToMarkAsExecuted = [name] };
         var result = MigrationScriptService.GetScripts(scripts, options);
 
         Assert.True(result.IsValid, result.Error);
-        Assert.Equal("First.Migrations.V001.sql", Assert.Single(result.Scripts.ScriptsToMark).Name);
+        Assert.Equal($"First.Migrations.{name}", Assert.Single(result.Scripts.ScriptsToMark).Name);
         Assert.Single(result.Scripts.Migrations);
 
-        options.ScriptsToMarkAsExecuted = ["Second.Migrations.V001.sql"];
+        options.ScriptsToMarkAsExecuted = [$"Second.Migrations.{name}"];
         AssertInvalid(MigrationScriptService.GetScripts(scripts, options));
-        options.ScriptsToMarkAsExecuted = ["v001.sql"];
+        options.ScriptsToMarkAsExecuted = [name.ToLowerInvariant()];
         AssertInvalid(MigrationScriptService.GetScripts(scripts, options));
         options.ScriptsToMarkAsExecuted = [];
         AssertInvalid(MigrationScriptService.GetScripts([scripts[1]], options));
         AssertInvalid(MigrationScriptService.GetScripts([scripts[2]], options));
-    }
-
-    [Fact]
-    public void ScriptsPath_IsOnlyRequiredForDirectoryPreparation()
-    {
-        var options = new DbUpOptions { BaseNamespace = "TestScripts" };
-        AssertInvalid(MigrationScriptService.GetScripts(options), "A scripts directory is required.");
-        Assert.True(MigrationScriptService.GetScripts(typeof(ScriptTests).Assembly, options).IsValid);
-    }
-
-    [Fact]
-    public void MissingDirectory_ReturnsError()
-    {
-        var options = new DbUpOptions { BaseNamespace = "Test", ScriptsPath = Path.Combine(_directory, "missing") };
-        AssertInvalid(MigrationScriptService.GetScripts(options), "The scripts directory does not exist.");
     }
 
     [Fact]
@@ -141,6 +145,31 @@ public sealed class ScriptTests : IDisposable
         Assert.Equal(["Test.ProgrammableObjects.Z.sql", "Test.ProgrammableObjects.A.sql"],
             result.Scripts.ProgrammableObjects.Select(s => s.Name));
         Assert.Equal(1, enumerations);
+    }
+
+    [Fact]
+    public void Preparation_AcceptsAnyMigrationNamesAndOrdersByName()
+    {
+        var result = MigrationScriptService.GetScripts(
+            new[] { "V10", "V2", "B005", "Initial", "V001_First", "V1_Second" }
+                .Select(name => new SqlScript($"Test.Migrations.{name}.sql", "SELECT 1;")),
+            new DbUpOptions { BaseNamespace = "Test" });
+
+        Assert.True(result.IsValid, result.Error);
+        Assert.Equal(["B005", "Initial", "V001_First", "V10", "V1_Second", "V2"],
+            result.Scripts.Migrations.Select(s => s.Name["Test.Migrations.".Length..^4]));
+    }
+
+    [Theory]
+    [InlineData(null, "A scripts directory is required.")]
+    [InlineData("missing", "The scripts directory does not exist.")]
+    public void DirectoryPreparation_RejectsMissingPath(string? path, string expectedError)
+    {
+        var options = new DbUpOptions
+        {
+            BaseNamespace = "Test", ScriptsPath = path is null ? null : Path.Combine(_directory, path)
+        };
+        AssertInvalid(MigrationScriptService.GetScripts(options), expectedError);
     }
 
     private static void AssertInvalid(MigrationScriptResult result, string? expectedError = null)

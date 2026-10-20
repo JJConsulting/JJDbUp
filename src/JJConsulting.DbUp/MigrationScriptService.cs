@@ -1,5 +1,6 @@
 using System.Reflection;
 using DbUp.Engine;
+using DbUp.ScriptProviders;
 using DbUpX;
 using JJConsulting.DbUp.Configuration;
 
@@ -23,17 +24,23 @@ public static class MigrationScriptService
 
         var directory = options.ScriptsPath;
 
-        var scripts = Categories.SelectMany(category =>
+        // Let DbUp discover and read scripts; retain the namespace used by existing journals.
+        var provider = new FileSystemScriptProvider(directory, new FileSystemScriptOptions
+        {
+            IncludeSubDirectories = true,
+            // The default *.sql glob is case sensitive on Linux.
+            Extensions = ["*"],
+            Filter = path =>
             {
-                if (Directory.Exists(Path.Combine(directory, category)))
-                    return Directory.EnumerateFiles(Path.Combine(directory, category), "*", SearchOption.AllDirectories)
-                        .Where(path => path.EndsWith(".sql", StringComparison.OrdinalIgnoreCase));
-                return [];
-            })
-            .Order(StringComparer.Ordinal)
-            .Select(path => new SqlScript(options.BaseNamespace + "." + Path.GetRelativePath(directory, path)
-                    .Replace(Path.DirectorySeparatorChar, '.').Replace(Path.AltDirectorySeparatorChar, '.'),
-                File.ReadAllText(path)));
+                var relative = Path.GetRelativePath(directory, path);
+                return path.EndsWith(".sql", StringComparison.OrdinalIgnoreCase) &&
+                       Categories.Any(category =>
+                           relative.StartsWith(category + Path.DirectorySeparatorChar, StringComparison.Ordinal));
+            }
+        });
+        var scripts = provider.GetScripts(null)
+            .Select(script =>
+                new SqlScript(options.BaseNamespace + "." + script.Name, script.Contents, script.SqlScriptOptions));
 
         return GetScriptsWithValidatedOptions(scripts, options);
     }
@@ -47,15 +54,9 @@ public static class MigrationScriptService
         if (error is not null)
             return MigrationScriptResult.Failed(error);
 
-        var scripts = assembly.GetManifestResourceNames()
-            .Where(name =>
-                IsScript(name, options.MigrationsPrefix) || IsScript(name, options.ProgrammableObjectsPrefix))
-            .Select(name =>
-            {
-                using var stream = assembly.GetManifestResourceStream(name)!;
-                using var reader = new StreamReader(stream);
-                return new SqlScript(name, reader.ReadToEnd());
-            });
+        var provider = new EmbeddedScriptProvider(assembly, name =>
+            IsScript(name, options.MigrationsPrefix) || IsScript(name, options.ProgrammableObjectsPrefix));
+        var scripts = provider.GetScripts(null);
 
         return GetScriptsWithValidatedOptions(scripts, options);
     }
@@ -71,7 +72,8 @@ public static class MigrationScriptService
             : GetScriptsWithValidatedOptions(scripts, options);
     }
 
-    private static MigrationScriptResult GetScriptsWithValidatedOptions(IEnumerable<SqlScript> scripts, DbUpOptions options)
+    private static MigrationScriptResult GetScriptsWithValidatedOptions(IEnumerable<SqlScript> scripts,
+        DbUpOptions options)
     {
         var all = scripts.ToArray();
         var migrations = all.Where(s => IsScript(s.Name, options.MigrationsPrefix))
@@ -113,19 +115,7 @@ public static class MigrationScriptService
         {
             Migrations = migrations,
             ProgrammableObjects = objects,
-            ScriptsToMark = scriptsToMark,
-            // Prepared scripts retain the settings that were validated, even if the caller reuses its options.
-            Options = new DbUpOptions
-            {
-                ScriptsPath = options.ScriptsPath,
-                BaseNamespace = options.BaseNamespace,
-                Schema = options.Schema,
-                MigrationJournal = options.MigrationJournal,
-                ProgrammableObjectJournal = options.ProgrammableObjectJournal,
-                DependencyDirective = options.DependencyDirective,
-                EnsureDatabase = options.EnsureDatabase,
-                ScriptsToMarkAsExecuted = [.. options.ScriptsToMarkAsExecuted]
-            }
+            ScriptsToMark = scriptsToMark
         });
     }
 

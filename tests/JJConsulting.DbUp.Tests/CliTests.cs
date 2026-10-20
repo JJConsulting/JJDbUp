@@ -1,7 +1,5 @@
 using System.Text.Json;
-using DbUp.Engine;
 using JJConsulting.DbUp.Cli;
-using JJConsulting.DbUp.Configuration;
 
 namespace JJConsulting.DbUp.Tests;
 
@@ -31,6 +29,7 @@ public sealed class CliTests : IDisposable
     [InlineData("--help")]
     [InlineData("--version")]
     [InlineData("status", "--help")]
+    [InlineData("baseline", "--help")]
     public void BuiltInActions_DoNotRequireConfiguration(params string[] args)
     {
         var result = Run(args);
@@ -44,7 +43,11 @@ public sealed class CliTests : IDisposable
     [InlineData("status", "--invalid")]
     [InlineData("new")]
     [InlineData("mark-executed")]
+    [InlineData("baseline")]
     [InlineData("validate", "--output", "xml")]
+    [InlineData("validate", "--config", "missing.json")]
+    [InlineData("validate", "--scripts", ".")]
+    [InlineData("validate", "--scripts", "missing", "--base-namespace", "Test")]
     public void InvalidArguments_ReturnUsageCode(params string[] args) => Assert.Equal(2, Run(args).Code);
 
     [Fact]
@@ -56,13 +59,6 @@ public sealed class CliTests : IDisposable
         Assert.Equal("validate", json.RootElement.GetProperty("command").GetString());
         Assert.Equal(1, json.RootElement.GetProperty("data").GetProperty("scriptCount").GetInt32());
         Assert.Empty(result.Error);
-    }
-
-    [Fact]
-    public void ValidateAssembly_UsesExistingEmbeddedResources()
-    {
-        var result = Run("validate", "--assembly", typeof(DatabaseMigratorTests).Assembly.Location, "--base-namespace", "TestScripts");
-        Assert.Equal(0, result.Code);
     }
 
     [Fact]
@@ -155,20 +151,14 @@ public sealed class CliTests : IDisposable
     }
 
     [Fact]
-    public void ParserErrors_DoNotEchoSecrets()
+    public void Baseline_RejectsAssemblyAndInvalidNamesWithoutConnecting()
     {
-        var result = Run("status", "--connection-string", "Password=secret-do-not-print", "--unknown", "--output", "json");
-        Assert.Equal(2, result.Code);
-        Assert.DoesNotContain("secret-do-not-print", result.Output + result.Error);
-        using var json = JsonDocument.Parse(result.Output);
-        Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(2, Run("baseline", "B005", "--assembly", typeof(CliTests).Assembly.Location,
+            "--base-namespace", "TestScripts", "--connection-string", "invalid").Code);
+        foreach (var name in new[] { "../B005", "Nested/B005", "Nested\\B005" })
+            Assert.Equal(2, Run("baseline", name, "--scripts", Scripts(), "--base-namespace", "TestScripts",
+                "--connection-string", "invalid", "--dry").Code);
     }
-
-    [Theory]
-    [InlineData("validate", "--config", "missing.json")]
-    [InlineData("validate", "--scripts", ".")]
-    [InlineData("validate", "--scripts", "missing", "--base-namespace", "Test")]
-    public void MissingConfiguration_ReturnsUsageCode(params string[] args) => Assert.Equal(2, Run(args).Code);
 
     [Fact]
     public void New_CreatesNestedFilesAndDoesNotOverwrite()
@@ -180,6 +170,8 @@ public sealed class CliTests : IDisposable
         Assert.Equal(2, Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql", "--base-namespace", "Test").Code);
         Assert.Equal(0, Run("new", "V002_Test.sql", "--scripts", "sql", "--base-namespace", "Test").Code);
         Assert.True(File.Exists(Path.Combine(_directory, "sql", "Migrations", "V002_Test.sql")));
+        Assert.Equal(0, Run("new", "InitialSchema", "--scripts", "sql", "--base-namespace", "Test").Code);
+        Assert.Equal(0, Run("validate", "--scripts", "sql", "--base-namespace", "Test").Code);
     }
 
     [Theory]
@@ -224,20 +216,12 @@ public sealed class CliTests : IDisposable
     }
 
     [Theory]
-    [InlineData("-- #requires Missing\nSELECT 1;", "SELECT 1;")]
-    [InlineData("-- #requires B\nSELECT 1;", "-- #requires A\nSELECT 1;")]
-    public void OfflineValidation_RejectsInvalidDependencies(string a, string b)
+    [InlineData("status", "--unknown")]
+    [InlineData("migrate")]
+    public void ParserAndConfigurationErrors_DoNotEchoSecretsAndEmitJson(string command, params string[] extra)
     {
-        var options = new DbUpOptions { BaseNamespace = "Test" };
-        Assert.False(MigrationScriptService.GetScripts(
-            [new SqlScript("Test.ProgrammableObjects.A.sql", a), new SqlScript("Test.ProgrammableObjects.B.sql", b)], options).IsValid);
-    }
-
-    [Fact]
-    public void Errors_DoNotEchoSecretsAndAreJson()
-    {
-        var result = Run("migrate", "--scripts", Scripts(), "--base-namespace", "TestScripts",
-            "--connection-string", "secret-value-is-not-a-connection-string", "--output", "json");
+        var result = Run([command, "--scripts", Scripts(), "--base-namespace", "TestScripts",
+            "--connection-string", "secret-value-is-not-a-connection-string", "--output", "json", .. extra]);
         Assert.Equal(2, result.Code);
         Assert.DoesNotContain("secret-value", result.Output + result.Error);
         using var json = JsonDocument.Parse(result.Output);

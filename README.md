@@ -17,8 +17,11 @@ Database/
 
 | Folder | Behavior |
 |---|---|
-| `Migrations` | Runs once per script name. Add a new numbered file for each change. |
+| `Migrations` | SQL scripts run once per name, in ordinal filename order. |
 | `ProgrammableObjects` | Runs when new or changed by content hash. Edit the existing file; use `CREATE OR ALTER`. |
+
+Migration filenames are unrestricted. Use sortable names such as `001_CreateTable.sql` and
+`002_AddStatus.sql` to define execution order.
 
 Migrations run first. When migrations run, **all programmable objects are reapplied**. Otherwise, unchanged objects are skipped.
 Declare object dependencies with `-- #requires fn_OrderTotal, vw_Order`, using filenames without `.sql`.
@@ -58,6 +61,8 @@ Folder scripts use that same prefix. Keep it unchanged to preserve migration his
 
 | Command | Purpose |
 |---|---|
+| `jjdbup baseline 001_InitialState` | Export the current schema as a regular migration. |
+| `jjdbup baseline 001_InitialState --dry-run` | Extract and validate, showing the destination without changing files or the database. |
 | `jjdbup new V003_AddStatus` | Create a migration file without overwriting existing files. |
 | `jjdbup new Views/vw_Order --type object` | Create a programmable object file. |
 | `jjdbup validate` | Check script names and dependencies offline; does not validate SQL syntax. |
@@ -72,6 +77,14 @@ Use environment variables such as `ConnectionStrings__DefaultConnection`, `Datab
 
 `--output json` emits one result on stdout; diagnostics go to stderr.
 Exit codes: **0** success, **1** operational failure, **2** invalid input, **3** pending changes with `status --check`.
+
+## Baselines
+
+The `baseline` command exports the current database structure to a regular migration file:
+
+```sh
+jjdbup baseline 001_InitialState.sql
+```
 
 ## CI
 
@@ -101,7 +114,6 @@ DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, "Order.Api.
 
 var options = new DbUpOptions { BaseNamespace = "Order.Api.Database", ScriptsPath = "Database" };
 
-// Or pass the configured options:
 DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, options);
 ```
 

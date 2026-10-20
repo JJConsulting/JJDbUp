@@ -19,6 +19,8 @@
 	<ItemGroup>
 
 		<PackageReference Include="dbup-sqlserver" />
+        <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" />
+        <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" />
         <PackageReference Include="DbUpX.Reborn" />
 		
 		<PackageReference Include="Microsoft.Extensions.Options" />
@@ -32,4 +34,8 @@
 	    <Link>README.md</Link>
 	  </Content>
 	</ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="JJConsulting.DbUp.Cli" />
+    <InternalsVisibleTo Include="JJConsulting.DbUp.Tests" />
+  </ItemGroup>
 </Project>

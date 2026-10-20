@@ -8,7 +8,7 @@ internal static class CliApplication
     public static int Run(string[] args, TextWriter output, TextWriter error, string? workingDirectory = null,
         IEnumerable<KeyValuePair<string, string?>>? environment = null)
     {
-        var command = args.FirstOrDefault(a => a is "migrate" or "status" or "validate" or "new" or "mark-executed") ??
+        var command = args.FirstOrDefault(a => a is "migrate" or "status" or "validate" or "new" or "mark-executed" or "baseline") ??
                       "jjdbup";
 
         // Preserve JSON errors even when parsing fails before settings can be bound.
@@ -31,6 +31,8 @@ internal static class CliApplication
                 .WithDescription("Validate scripts and dependencies offline; SQL syntax is not checked.");
             config.AddDelegate<NewOptions>("new", (_, args, _) => commands.New(args))
                 .WithDescription("Create a SQL script without overwriting existing files.");
+            config.AddDelegate<BaselineOptions>("baseline", (_, args, _) => commands.Baseline(args))
+                .WithDescription("Extract the current schema as a regular migration; use --dry-run to preview.");
             config.AddDelegate<MarkExecutedOptions>("mark-executed", (_, args, _) => commands.MarkExecuted(args))
                 .WithDescription("Adopt selected migrations without executing their SQL.");
         });
