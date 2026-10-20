@@ -32,6 +32,37 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM ProgrammableObjectVersions"));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void EmbeddedScripts_LegacyOverloadsCreateTablesAndSkipAppliedScripts(bool useOptions)
+    {
+        for (var run = 0; run < 2; run++)
+        {
+            if (useOptions)
+                DatabaseMigrator.Migrate(ConnectionString, typeof(DatabaseMigratorTests).Assembly, Options);
+            else
+                DatabaseMigrator.Migrate(ConnectionString, typeof(DatabaseMigratorTests).Assembly, "TestScripts");
+        }
+
+        Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM ProgrammableObjectVersions"));
+    }
+
+    [Fact]
+    public void ExplicitScripts_LegacyOverloadAppliesMigrationsAndObjects()
+    {
+        SqlScript[] scripts = [InitialMigration, View("ItemNames", "Name")];
+
+        DatabaseMigrator.Migrate(ConnectionString, scripts, Options);
+        DatabaseMigrator.Migrate(ConnectionString, scripts, Options);
+
+        Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
+    }
+
     [Fact]
     public void AppliedMigration_IsNotRunAgainEvenIfItsContentsChange()
     {
