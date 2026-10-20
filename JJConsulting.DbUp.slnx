@@ -13,4 +13,5 @@
     <Project Path="tests\JJConsulting.DbUp.Tests\JJConsulting.DbUp.Tests.csproj" />
   </Folder>
   <Project Path="src\JJConsulting.DbUp\JJConsulting.DbUp.csproj" />
+  <Project Path="src/JJConsulting.DbUp.Cli/JJConsulting.DbUp.Cli.csproj" />
 </Solution>

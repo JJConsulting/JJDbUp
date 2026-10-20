@@ -40,8 +40,17 @@ jobs:
       - name: Test with SQL Server Testcontainers
         run: dotnet test --solution JJConsulting.DbUp.slnx --configuration Release --no-build --no-restore --report-xunit-trx --results-directory TestResults
 
-      - name: Pack
-        run: dotnet pack "$PROJECT" --configuration Release --no-build --output artifacts -p:ContinuousIntegrationBuild=true
+      - name: Pack library and CLI
+        run: |
+          dotnet pack "$PROJECT" --configuration Release --no-build --output artifacts -p:ContinuousIntegrationBuild=true
+          dotnet pack src/JJConsulting.DbUp.Cli/JJConsulting.DbUp.Cli.csproj --configuration Release --no-build --output artifacts -p:ContinuousIntegrationBuild=true
+
+      - name: Smoke test tool package
+        run: |
+          cli_version=$(dotnet msbuild src/JJConsulting.DbUp.Cli/JJConsulting.DbUp.Cli.csproj -getProperty:Version)
+          dotnet tool install JJConsulting.DbUp.Cli --version "$cli_version" --source ./artifacts --tool-path ./tool-smoke
+          ./tool-smoke/jjdbup --help
+          ./tool-smoke/jjdbup --version
 
       - name: Upload package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

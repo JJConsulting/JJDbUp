@@ -1,0 +1,264 @@
+using System.Text.Json;
+using DbUp.Engine;
+using JJConsulting.DbUp.Cli;
+using JJConsulting.DbUp.Configuration;
+
+namespace JJConsulting.DbUp.Tests;
+
+public sealed class CliTests : IDisposable
+{
+    private readonly string _directory = Path.Combine(Path.GetTempPath(), "jjdbup-tests-" + Guid.NewGuid().ToString("N"));
+
+    public CliTests() => Directory.CreateDirectory(_directory);
+
+    private (int Code, string Output, string Error) Run(params string[] args)
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var code = CliApplication.Run(args, output, error, _directory, []);
+        return (code, output.ToString(), error.ToString());
+    }
+
+    private string Scripts()
+    {
+        var root = Path.Combine(_directory, "sql");
+        Directory.CreateDirectory(Path.Combine(root, "Migrations"));
+        File.WriteAllText(Path.Combine(root, "Migrations", "V001.sql"), "SELECT 1;");
+        return root;
+    }
+
+    [Theory]
+    [InlineData("--help")]
+    [InlineData("--version")]
+    [InlineData("status", "--help")]
+    public void BuiltInActions_DoNotRequireConfiguration(params string[] args)
+    {
+        var result = Run(args);
+        Assert.Equal(0, result.Code);
+        Assert.NotEmpty(result.Output);
+        Assert.Empty(result.Error);
+    }
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("status", "--invalid")]
+    [InlineData("new")]
+    [InlineData("mark-executed")]
+    [InlineData("validate", "--output", "xml")]
+    public void InvalidArguments_ReturnUsageCode(params string[] args) => Assert.Equal(2, Run(args).Code);
+
+    [Fact]
+    public void ValidateFolder_IsOfflineAndEmitsOneJsonResult()
+    {
+        var result = Run("validate", "--scripts", Scripts(), "--base-namespace", "TestScripts", "--output", "json");
+        Assert.Equal(0, result.Code);
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.Equal("validate", json.RootElement.GetProperty("command").GetString());
+        Assert.Equal(1, json.RootElement.GetProperty("data").GetProperty("scriptCount").GetInt32());
+        Assert.Empty(result.Error);
+    }
+
+    [Fact]
+    public void ValidateAssembly_UsesExistingEmbeddedResources()
+    {
+        var result = Run("validate", "--assembly", typeof(DatabaseMigratorTests).Assembly.Location, "--base-namespace", "TestScripts");
+        Assert.Equal(0, result.Code);
+    }
+
+    [Fact]
+    public void Configuration_UsesFileRelativePathsAndEnvironmentAndArgumentPrecedence()
+    {
+        var sub = Path.Combine(_directory, "config");
+        Directory.CreateDirectory(sub);
+        File.WriteAllText(Path.Combine(sub, "appsettings.json"), """
+            {"DatabaseMigrations":{"BaseNamespace":"File","EnsureDatabase":true,
+             "ScriptsPath":"../sql"},
+             "ConnectionStrings":{"Other":"file-connection"}}
+            """);
+        var options = new DbUpCommandOptions { Config = "config/appsettings.json", BaseNamespace = "Argument", EnsureDatabase = false, ConnectionName = "Other" };
+        var config = DbUpOptionsLoader.Load(options, _directory, new Dictionary<string, string?>
+        {
+            ["DatabaseMigrations__BaseNamespace"] = "Environment",
+            ["ConnectionStrings__Other"] = "environment-connection"
+        });
+        Assert.Equal(Path.Combine(_directory, "sql"), config.Migrations.ScriptsPath);
+        Assert.Equal("Argument", config.Migrations.BaseNamespace);
+        Assert.False(config.Migrations.EnsureDatabase);
+        Assert.Equal("environment-connection", config.ConnectionString);
+        var environmentOnly = DbUpOptionsLoader.Load(new DbUpCommandOptions { ScriptsPath = "relative" }, _directory,
+            new Dictionary<string, string?> { ["DatabaseMigrations__BaseNamespace"] = "Environment" });
+        Assert.Equal("Environment", environmentOnly.Migrations.BaseNamespace);
+        Assert.True(environmentOnly.Migrations.EnsureDatabase);
+        Assert.Equal(Path.Combine(_directory, "relative"), environmentOnly.Migrations.ScriptsPath);
+    }
+
+    [Fact]
+    public void ExplicitSource_OverridesConfiguredOtherSource()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"BaseNamespace":"TestScripts","ScriptsPath":"missing-directory"}}
+            """);
+        Assert.Equal(0, Run("validate", "--scripts", Scripts()).Code);
+        Assert.Equal(0, Run("validate", "--assembly", typeof(CliTests).Assembly.Location).Code);
+        Assert.Equal(2, Run("validate", "--scripts", Scripts(), "--assembly", "missing.dll").Code);
+    }
+
+    [Fact]
+    public void EnvironmentSource_ReplacesFileSourceAndUsesWorkingDirectory()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"BaseNamespace":"TestScripts","ScriptsPath":"file-directory"}}
+            """);
+        var config = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory,
+            new Dictionary<string, string?> { ["DatabaseMigrations__ScriptsPath"] = "environment-sql" });
+        Assert.Equal(Path.Combine(_directory, "environment-sql"), config.Migrations.ScriptsPath);
+        Assert.Null(config.Assembly);
+    }
+
+    [Fact]
+    public void InvalidJsonAndInvalidBoolean_AreConfigurationErrors()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), "{ invalid json");
+        Assert.Equal(2, Run("validate", "--scripts", Scripts(), "--base-namespace", "Test").Code);
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"BaseNamespace":"Test","EnsureDatabase":"invalid","ScriptsPath":"sql"}}
+            """);
+        Assert.Equal(2, Run("validate").Code);
+        Assert.Equal(0, Run("validate", "--ensure-database", "true").Code);
+    }
+
+    [Fact]
+    public void SharedScriptsPath_PreservesNamespaceAndKeepsConnectionSelectionInCli()
+    {
+        Scripts();
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"ScriptsPath":"sql","BaseNamespace":"TestScripts"},
+             "ConnectionStrings":{"DefaultConnection":"default-connection","Other":"other-connection"}}
+            """);
+        Assert.Equal(0, Run("validate").Code);
+        var args = new DbUpCommandOptions();
+        var settings = DbUpOptionsLoader.Load(args, _directory, []);
+        Assert.Equal("default-connection", settings.ConnectionString);
+        Assert.True(MigrationScriptService.GetScripts(settings.Migrations).IsValid);
+
+        args.ConnectionName = "Other";
+        Assert.Equal("other-connection", DbUpOptionsLoader.Load(args, _directory, []).ConnectionString);
+        args.ConnectionString = "direct-connection";
+        Assert.Equal("direct-connection", DbUpOptionsLoader.Load(args, _directory, []).ConnectionString);
+    }
+
+    [Fact]
+    public void New_RejectsAssemblySource()
+    {
+        Assert.Equal(2, Run("new", "V002_Test", "--assembly", typeof(CliTests).Assembly.Location,
+            "--base-namespace", "TestScripts").Code);
+    }
+
+    [Fact]
+    public void ParserErrors_DoNotEchoSecrets()
+    {
+        var result = Run("status", "--connection-string", "Password=secret-do-not-print", "--unknown", "--output", "json");
+        Assert.Equal(2, result.Code);
+        Assert.DoesNotContain("secret-do-not-print", result.Output + result.Error);
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("validate", "--config", "missing.json")]
+    [InlineData("validate", "--scripts", ".")]
+    [InlineData("validate", "--scripts", "missing", "--base-namespace", "Test")]
+    public void MissingConfiguration_ReturnsUsageCode(params string[] args) => Assert.Equal(2, Run(args).Code);
+
+    [Fact]
+    public void New_CreatesNestedFilesAndDoesNotOverwrite()
+    {
+        var result = Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql", "--base-namespace", "Test");
+        Assert.Equal(0, result.Code);
+        var path = Path.Combine(_directory, "sql", "ProgrammableObjects", "Views", "ItemNames.sql");
+        Assert.Contains("CREATE OR ALTER", File.ReadAllText(path));
+        Assert.Equal(2, Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql", "--base-namespace", "Test").Code);
+        Assert.Equal(0, Run("new", "V002_Test.sql", "--scripts", "sql", "--base-namespace", "Test").Code);
+        Assert.True(File.Exists(Path.Combine(_directory, "sql", "Migrations", "V002_Test.sql")));
+    }
+
+    [Theory]
+    [InlineData("#requires")]
+    [InlineData("#depends")]
+    public void NewObject_CanBeValidatedWithoutEditingItsComment(string directive)
+    {
+        string[] options = ["--scripts", "sql", "--base-namespace", "Test", "--dependency-directive", directive];
+        Assert.Equal(0, Run(["new", "Views/Example", "--type", "object", .. options]).Code);
+
+        var result = Run(["validate", .. options]);
+
+        Assert.True(result.Code == 0, result.Output + result.Error);
+    }
+
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("Views/../../escape")]
+    [InlineData("..\\escape")]
+    [InlineData("/tmp/escape")]
+    [InlineData("C:\\escape")]
+    public void New_RejectsTraversal(string name) =>
+        Assert.Equal(2, Run("new", name, "--scripts", "sql", "--base-namespace", "Test").Code);
+
+    [Fact]
+    public void New_RejectsSymlinkDirectories()
+    {
+        Directory.CreateDirectory(Path.Combine(_directory, "outside"));
+        Directory.CreateSymbolicLink(Path.Combine(_directory, "linked"), Path.Combine(_directory, "outside"));
+        Assert.Equal(2, Run("new", "escape", "--scripts", "linked", "--base-namespace", "Test").Code);
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_directory, "outside"), "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public void FolderNamesThatFlattenToSameResourceName_AreRejected()
+    {
+        var root = Scripts();
+        Directory.CreateDirectory(Path.Combine(root, "Migrations", "Nested"));
+        File.WriteAllText(Path.Combine(root, "Migrations", "Nested", "V002.sql"), "SELECT 1;");
+        File.WriteAllText(Path.Combine(root, "Migrations", "Nested.V002.sql"), "SELECT 2;");
+        Assert.Equal(2, Run("validate", "--scripts", root, "--base-namespace", "Test").Code);
+    }
+
+    [Theory]
+    [InlineData("-- #requires Missing\nSELECT 1;", "SELECT 1;")]
+    [InlineData("-- #requires B\nSELECT 1;", "-- #requires A\nSELECT 1;")]
+    public void OfflineValidation_RejectsInvalidDependencies(string a, string b)
+    {
+        var options = new DbUpOptions { BaseNamespace = "Test" };
+        Assert.False(MigrationScriptService.GetScripts(
+            [new SqlScript("Test.ProgrammableObjects.A.sql", a), new SqlScript("Test.ProgrammableObjects.B.sql", b)], options).IsValid);
+    }
+
+    [Fact]
+    public void Errors_DoNotEchoSecretsAndAreJson()
+    {
+        var result = Run("migrate", "--scripts", Scripts(), "--base-namespace", "TestScripts",
+            "--connection-string", "secret-value-is-not-a-connection-string", "--output", "json");
+        Assert.Equal(2, result.Code);
+        Assert.DoesNotContain("secret-value", result.Output + result.Error);
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+    }
+
+    [Fact]
+    public void StatusTable_RendersSqlNamesAsLiteralText()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var presentation = new ConsoleHelper("status", false, output, error);
+        presentation.Complete(new DatabaseMigrationStatus
+        {
+            DatabaseExists = true,
+            PendingMigrations = ["Test.Migrations.[red].sql"],
+            PendingObjects = []
+        });
+        Assert.Contains("[red].sql", output.ToString());
+        Assert.Empty(error.ToString());
+    }
+
+    public void Dispose() => Directory.Delete(_directory, true);
+}

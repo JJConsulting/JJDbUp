@@ -21,5 +21,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\JJConsulting.DbUp\JJConsulting.DbUp.csproj" />
+    <ProjectReference Include="../../src/JJConsulting.DbUp.Cli/JJConsulting.DbUp.Cli.csproj" />
   </ItemGroup>
 </Project>

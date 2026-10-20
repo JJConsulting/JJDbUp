@@ -13,6 +13,7 @@ public sealed class DbUpServiceCollectionExtensionsTests
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["DatabaseMigrations:BaseNamespace"] = "App.Database",
+            ["DatabaseMigrations:ScriptsPath"] = "Database",
             ["DatabaseMigrations:Schema"] = "migrations",
             ["DatabaseMigrations:MigrationJournal"] = "AppliedMigrations",
             ["DatabaseMigrations:ProgrammableObjectJournal"] = "AppliedObjects",
@@ -27,6 +28,7 @@ public sealed class DbUpServiceCollectionExtensionsTests
         var options = provider.GetRequiredService<IOptions<DbUpOptions>>().Value;
 
         Assert.Equal("App.Database", options.BaseNamespace);
+        Assert.Equal("Database", options.ScriptsPath);
         Assert.Equal("migrations", options.Schema);
         Assert.Equal("AppliedMigrations", options.MigrationJournal);
         Assert.Equal("AppliedObjects", options.ProgrammableObjectJournal);
@@ -47,6 +49,9 @@ public sealed class DbUpServiceCollectionExtensionsTests
         var options = provider.GetRequiredService<IOptions<DbUpOptions>>().Value;
 
         Assert.Equal(string.Empty, options.BaseNamespace);
+        Assert.Null(options.ScriptsPath);
+        Assert.Equal(".Migrations.", options.MigrationsPrefix);
+        Assert.Equal(".ProgrammableObjects.", options.ProgrammableObjectsPrefix);
         Assert.Equal("dbo", options.Schema);
         Assert.Equal("SchemaVersions", options.MigrationJournal);
         Assert.Equal("ProgrammableObjectVersions", options.ProgrammableObjectJournal);
