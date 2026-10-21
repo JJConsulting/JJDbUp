@@ -67,3 +67,12 @@ internal sealed class MarkExecutedOptions : DbUpCommandOptions
     [CommandOption("--script <NAME>", isRequired: true), Description("Migration name relative to Migrations, including .sql; repeat to select more.")]
     public string[] ScriptsToMark { get; set; } = [];
 }
+
+internal sealed class BaselineOptions : DbUpCommandOptions
+{
+    [CommandArgument(0, "<name>"), Description("Migration filename, for example 001_InitialState; .sql is optional.")]
+    public string Name { get; set; } = "";
+
+    [CommandOption("--dry-run|--dry"), Description("Extract and validate, showing the destination without changing files.")]
+    public bool DryRun { get; set; }
+}

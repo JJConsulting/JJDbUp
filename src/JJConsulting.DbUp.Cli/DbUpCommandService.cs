@@ -15,7 +15,7 @@ internal sealed class DbUpCommandService(ConsoleHelper output, TextWriter error,
         if (!preparation.IsValid)
             return output.Fail(preparation.Error, 2);
         var scripts = preparation.Scripts;
-        DatabaseMigrator.Migrate(connection, scripts, _log);
+        DatabaseMigrator.Migrate(connection, scripts, settings.Migrations, _log);
         return output.Complete(new CommandMessage("Migration completed."));
     }
 
@@ -27,7 +27,7 @@ internal sealed class DbUpCommandService(ConsoleHelper output, TextWriter error,
         if (!preparation.IsValid)
             return output.Fail(preparation.Error, 2);
         var scripts = preparation.Scripts;
-        var status = DatabaseMigrator.GetStatus(connection, scripts, _log);
+        var status = DatabaseMigrator.GetStatus(connection, scripts, settings.Migrations, _log);
         return output.Complete(status, args.Check && status.HasPendingChanges ? 3 : 0);
     }
 
@@ -46,6 +46,16 @@ internal sealed class DbUpCommandService(ConsoleHelper output, TextWriter error,
         return output.Complete(new ScriptCreated(SqlScriptCreator.Create(Load(args), args.Name, args.Type)));
     }
 
+    public int Baseline(BaselineOptions args)
+    {
+        var settings = Load(args);
+        if (settings.Assembly is not null || settings.Migrations.ScriptsPath is null)
+            throw new CliException("The baseline command requires a scripts directory, not an assembly.");
+        var files = new BaselineFiles(settings.Migrations.ScriptsPath, args.Name);
+        var generated = BaselineService.Generate(settings.RequireConnection(), settings.Migrations, args.Name);
+        return output.Complete(files.Save(generated, args.DryRun));
+    }
+
     public int MarkExecuted(MarkExecutedOptions args)
     {
         var settings = Load(args);
@@ -57,7 +67,7 @@ internal sealed class DbUpCommandService(ConsoleHelper output, TextWriter error,
         var scripts = preparation.Scripts;
         if (scripts.ScriptsToMark.Count == 0)
             return output.Fail("Select at least one migration to mark as executed.", 2);
-        DatabaseMigrator.MarkAsExecuted(connection, scripts, _log);
+        DatabaseMigrator.MarkAsExecuted(connection, scripts, settings.Migrations, _log);
         return output.Complete(new CommandMessage("Selected migrations marked as executed."));
     }
 

@@ -1,18 +1,16 @@
 using DbUp.Engine;
+using DbUp.Engine.Output;
 using JJConsulting.DbUp.Configuration;
 using JJConsulting.DbUp.Exceptions;
 using Microsoft.Data.SqlClient;
 
 namespace JJConsulting.DbUp.Tests;
 
-// One Testcontainers SQL Server per class; a separate database for each test.
-public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixture<SqlServerFixture>, IDisposable
+// One Testcontainers SQL Server per class; isolated databases are cleaned up by the fixture.
+public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IClassFixture<SqlServerFixture>
 {
-    private readonly string databaseName = "JJMigrations_" + Guid.NewGuid().ToString("N");
-    private string ConnectionString => new SqlConnectionStringBuilder(fixture.Container.GetConnectionString())
-    {
-        InitialCatalog = databaseName
-    }.ConnectionString;
+    private string ConnectionString { get; } = fixture.CreateDatabaseConnectionString();
+    private string DatabaseName => new SqlConnectionStringBuilder(ConnectionString).InitialCatalog;
 
     private static DbUpOptions Options => new() { BaseNamespace = "TestScripts" };
 
@@ -21,16 +19,6 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
         CREATE TABLE Executions (Sequence int IDENTITY PRIMARY KEY, ObjectName nvarchar(100) NOT NULL);
         INSERT INTO Items VALUES (1, 'Order');
         """);
-
-    [Fact]
-    public void EmbeddedScripts_CreateTablesAndQueryableView()
-    {
-        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(typeof(DatabaseMigratorTests).Assembly, Options)));
-
-        Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
-        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
-        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM ProgrammableObjectVersions"));
-    }
 
     [Theory]
     [InlineData(true)]
@@ -75,11 +63,13 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
     }
 
-    [Fact]
-    public void NewMigrations_RunInNameOrderAndOnlyOnce()
+    [Theory]
+    [InlineData("V002_Rename")]
+    [InlineData("B005_Baseline")]
+    public void NewMigrations_RunInNameOrderAndOnlyOnce(string secondName)
     {
         Run(InitialMigration);
-        var second = Migration("V002_Rename", "UPDATE Items SET Name = 'Second';");
+        var second = Migration(secondName, "UPDATE Items SET Name = 'Second';");
         var third = Migration("V003_Append", "UPDATE Items SET Name = Name + ' Third';");
 
         Run(third, InitialMigration, second);
@@ -90,26 +80,16 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
     }
 
     [Fact]
-    public void UnchangedObjects_AreSkippedAcrossSeparateRuns()
-    {
-        var view = View("ItemNames", "Name");
-        Run(InitialMigration, view);
-        var originalHash = Scalar<string>("SELECT ContentsHash FROM ProgrammableObjectVersions");
-
-        Run(InitialMigration, view);
-
-        Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
-        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions"));
-        Assert.Equal(originalHash, Scalar<string>("SELECT ContentsHash FROM ProgrammableObjectVersions"));
-    }
-
-    [Fact]
-    public void ChangedObject_UpdatesItsDefinitionAndHashWithoutRunningOtherObjects()
+    public void Objects_SkipUnchangedDefinitionsAndApplyOnlyChangedOnes()
     {
         var original = View("ItemNames", "Name");
         var unchanged = View("OtherNames", "Name");
         Run(InitialMigration, original, unchanged);
         var originalHash = HashFor("ItemNames");
+
+        Run(InitialMigration, original, unchanged);
+        Assert.Equal(originalHash, HashFor("ItemNames"));
+        Assert.Equal(2L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions"));
 
         Run(InitialMigration, View("ItemNames", "upper(Name) AS Name"), unchanged);
 
@@ -192,37 +172,42 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
         Assert.Equal(2L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions WHERE ObjectName = 'OtherNames'"));
     }
 
-    [Fact]
-    public void Adoption_RecordsExistingMigrationWithoutExecutingItAndRunsRemainingMigrations()
+    [Theory]
+    [InlineData("V001_CreateTables")]
+    [InlineData("InitialSchema")]
+    public void Adoption_RecordsExistingMigrationWithoutExecutingItAndRunsRemainingMigrations(string name)
     {
         global::DbUp.EnsureDatabase.For.SqlDatabase(ConnectionString);
         Execute(InitialMigration.Contents);
         var options = Options;
-        options.ScriptsToMarkAsExecuted = ["V001_CreateTables.sql"];
+        options.ScriptsToMarkAsExecuted = [name + ".sql"];
         var pending = Migration("V002_Insert", "INSERT INTO Items VALUES (2, 'New');");
 
-        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, pending], options)));
+        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts([Migration(name, InitialMigration.Contents), pending], options)), options);
 
         Assert.Equal(2L, Scalar<long>("SELECT COUNT_BIG(*) FROM Items"));
         Assert.Equal(2L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
     }
 
-    [Fact]
-    public void FailedMigration_RollsBackTheEntireMigrationStageAndCanBeRetried()
+    [Theory]
+    [InlineData("V002_Insert", "V003_Broken")]
+    [InlineData("B004_Insert", "B005_Broken")]
+    public void FailedMigration_RollsBackTheEntireMigrationStageAndCanBeRetried(string secondName, string brokenName)
     {
         Run(InitialMigration);
-        var second = Migration("V002_Insert", "INSERT INTO Items VALUES (2, 'Rolled back');");
-        var broken = Migration("V003_Broken", "INSERT INTO MissingTable VALUES (1);");
+        var second = Migration(secondName, "CREATE TABLE dbo.Pending (Id int); INSERT INTO Items VALUES (2, 'Rolled back');");
+        var broken = Migration(brokenName, "INSERT INTO MissingTable VALUES (1);");
 
         var error = Assert.Throws<DatabaseMigrationException>(() => Run(InitialMigration, second, broken));
 
+        Assert.Equal(0L, Scalar<long>("SELECT COUNT_BIG(*) FROM sys.tables WHERE name = 'Pending'"));
         Assert.Equal("Migrations", error.Stage);
-        Assert.Contains("V003_Broken.sql", error.ScriptName);
+        Assert.Contains(brokenName + ".sql", error.ScriptName);
         Assert.IsType<SqlException>(error.InnerException);
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM Items"));
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
 
-        Run(InitialMigration, second, Migration("V003_Broken", "UPDATE Items SET Name = 'Fixed' WHERE Id = 2;"));
+        Run(InitialMigration, second, Migration(brokenName, "UPDATE Items SET Name = 'Fixed' WHERE Id = 2;"));
         Assert.Equal("Fixed", Scalar<string>("SELECT Name FROM Items WHERE Id = 2"));
         Assert.Equal(3L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
     }
@@ -269,28 +254,177 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
     }
 
     [Fact]
-    public void PreparedSettings_PreserveQuotedJournalNamesAcrossRuns()
+    public void ExplicitSettings_UseQuotedJournalNamesAcrossRuns()
     {
         var options = Options;
         options.MigrationJournal = "Migration \" history";
         options.ProgrammableObjectJournal = "Object history";
         var scripts = new[] { InitialMigration, View("ItemNames", "Name") };
 
-        var prepared = Prepared(MigrationScriptService.GetScripts(scripts, options));
-        options.MigrationJournal = "Changed after preparation";
-        options.ProgrammableObjectJournal = "Changed after preparation";
-        options.DependencyDirective = "";
-        options.EnsureDatabase = false;
+        var prepared = Prepared(MigrationScriptService.GetScripts(scripts, Options));
 
-        DatabaseMigrator.Migrate(ConnectionString, prepared);
-        DatabaseMigrator.Migrate(ConnectionString, prepared);
+        DatabaseMigrator.Migrate(ConnectionString, prepared, options);
+        DatabaseMigrator.Migrate(ConnectionString, prepared, options);
 
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM \"Migration \"\" history\""));
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM \"Object history\""));
         Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions"));
     }
 
-    private void Run(params SqlScript[] scripts) => DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(scripts, Options)));
+    [Fact]
+    public void Status_OnMissingDatabase_DoesNotCreateIt()
+    {
+        var status = DatabaseMigrator.GetStatus(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, View("ItemNames", "Name")], Options)), Options, new NoOpUpgradeLog());
+        Assert.False(status.DatabaseExists);
+        Assert.True(status.HasPendingChanges);
+        using var connection = new SqlConnection(fixture.Container.GetConnectionString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT DB_ID(@name)";
+        command.Parameters.AddWithValue("@name", DatabaseName);
+        Assert.IsType<DBNull>(command.ExecuteScalar());
+    }
+
+    [Fact]
+    public void Status_OnDatabaseWithoutJournals_DoesNotCreateTables()
+    {
+        CreateEmptyDatabase();
+        var status = DatabaseMigrator.GetStatus(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, View("ItemNames", "Name")], Options)), Options, new NoOpUpgradeLog());
+        Assert.True(status.DatabaseExists);
+        Assert.Single(status.PendingMigrations);
+        Assert.Single(status.PendingObjects);
+        Assert.Equal(0L, Scalar<long>("SELECT COUNT_BIG(*) FROM sys.tables"));
+    }
+
+    [Fact]
+    public void Status_UsesHashesAndPredictsReapplicationWithoutChangingJournals()
+    {
+        var view = View("ItemNames", "Name");
+        Run(InitialMigration, view);
+        Assert.False(DatabaseMigrator.GetStatus(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, view], Options)), Options, new NoOpUpgradeLog()).HasPendingChanges);
+        var changed = View("ItemNames", "upper(Name) AS Name");
+        var status = DatabaseMigrator.GetStatus(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, changed], Options)), Options, new NoOpUpgradeLog());
+        Assert.Empty(status.PendingMigrations);
+        Assert.Equal("TestScripts.ProgrammableObjects.ItemNames.sql", Assert.Single(status.PendingObjects));
+        var hash = HashFor("ItemNames");
+        var pendingMigration = Migration("V002_AddStatus", "ALTER TABLE Items ADD Status int;");
+        status = DatabaseMigrator.GetStatus(ConnectionString, Prepared(MigrationScriptService.GetScripts([InitialMigration, pendingMigration, view], Options)), Options, new NoOpUpgradeLog());
+        Assert.Single(status.PendingMigrations);
+        Assert.Single(status.PendingObjects);
+        Assert.Equal(hash, HashFor("ItemNames"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM Executions"));
+    }
+
+    [Theory]
+    [InlineData("V001_CreateTables")]
+    [InlineData("InitialSchema")]
+    public void Adoption_OnlyRecordsSelectedMigrationsAndIsIdempotent(string name)
+    {
+        var options = Options;
+        options.ScriptsToMarkAsExecuted = [name + ".sql"];
+        var scripts = new[] { Migration(name, InitialMigration.Contents), Migration("V002_Broken", "THROW 50000, 'must not run', 1;"), View("ItemNames", "Name") };
+        DatabaseMigrator.MarkAsExecuted(ConnectionString, Prepared(MigrationScriptService.GetScripts(scripts, options)), options, new NoOpUpgradeLog());
+        DatabaseMigrator.MarkAsExecuted(ConnectionString, Prepared(MigrationScriptService.GetScripts(scripts, options)), options, new NoOpUpgradeLog());
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
+        Assert.Equal(0L, Scalar<long>("SELECT COUNT_BIG(*) FROM sys.tables WHERE name IN ('Items', 'ProgrammableObjectVersions')"));
+    }
+
+    [Fact]
+    public void Status_WithContainedUser_DoesNotRequireAccessToMaster()
+    {
+        CreateEmptyDatabase();
+        using (var admin = new SqlConnection(fixture.Container.GetConnectionString()))
+        {
+            admin.Open();
+            using var command = admin.CreateCommand();
+            command.CommandText = $"""
+                EXEC sp_configure 'contained database authentication', 1;
+                RECONFIGURE;
+                ALTER DATABASE [{DatabaseName}] SET CONTAINMENT = PARTIAL;
+                """;
+            command.ExecuteNonQuery();
+        }
+        using (var admin = new SqlConnection(ConnectionString))
+        {
+            admin.Open();
+            using var command = admin.CreateCommand();
+            command.CommandText = """
+                CREATE USER ContainedUser WITH PASSWORD = 'TestOnly#123456789!';
+                ALTER ROLE db_owner ADD MEMBER ContainedUser;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var settings = new SqlConnectionStringBuilder(ConnectionString)
+        {
+            UserID = "ContainedUser", Password = "TestOnly#123456789!", ConnectTimeout = 2, Pooling = false
+        };
+        var options = Options;
+        options.EnsureDatabase = false;
+        var scripts = Prepared(MigrationScriptService.GetScripts([InitialMigration], options));
+        DatabaseMigrator.Migrate(settings.ConnectionString, scripts, options, new NoOpUpgradeLog());
+
+        var status = DatabaseMigrator.GetStatus(settings.ConnectionString, scripts, options, new NoOpUpgradeLog());
+
+        Assert.True(status.DatabaseExists);
+        Assert.False(status.HasPendingChanges);
+        settings.InitialCatalog = "master";
+        using var master = new SqlConnection(settings.ConnectionString);
+        Assert.Throws<SqlException>(() => master.Open());
+    }
+
+    [Fact]
+    public void Status_DoesNotTreatHiddenInaccessibleDatabaseAsMissing()
+    {
+        CreateEmptyDatabase();
+        var login = "jjdbup_" + Guid.NewGuid().ToString("N");
+        using var admin = new SqlConnection(fixture.Container.GetConnectionString());
+        admin.Open();
+        using var command = admin.CreateCommand();
+        command.CommandText = $"CREATE LOGIN [{login}] WITH PASSWORD = 'TestOnly#123456789!'; DENY VIEW ANY DATABASE TO [{login}];";
+        command.ExecuteNonQuery();
+        try
+        {
+            var restricted = new SqlConnectionStringBuilder(ConnectionString)
+            {
+                UserID = login, Password = "TestOnly#123456789!", ConnectTimeout = 2, Pooling = false
+            }.ConnectionString;
+            Assert.Throws<SqlException>(() => DatabaseMigrator.GetStatus(restricted, Prepared(MigrationScriptService.GetScripts([InitialMigration], Options)), Options, new NoOpUpgradeLog()));
+        }
+        finally
+        {
+            command.CommandText = $"DROP LOGIN [{login}]";
+            command.ExecuteNonQuery();
+        }
+    }
+
+    [Fact]
+    public void AssemblyPreparation_IgnoresScriptsPathAndPreservesJournalNames()
+    {
+        var assembly = typeof(DatabaseMigratorTests).Assembly;
+        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(assembly, new DbUpOptions { BaseNamespace = "TestScripts" })), Options);
+        var options = Options;
+        options.ScriptsPath = "missing-directory-must-not-be-used";
+
+        Assert.False(DatabaseMigrator.GetStatus(ConnectionString, Prepared(MigrationScriptService.GetScripts(assembly, options)), options, new NoOpUpgradeLog()).HasPendingChanges);
+        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(assembly, options)), options, new NoOpUpgradeLog());
+        Assert.Equal("TestScripts.Migrations.V001_CreateTable.sql", Scalar<string>("SELECT ScriptName FROM SchemaVersions"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM SchemaVersions"));
+        Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
+        Assert.Equal(1L, Scalar<long>("SELECT COUNT_BIG(*) FROM ProgrammableObjectVersions"));
+    }
+
+    private void CreateEmptyDatabase()
+    {
+        using var connection = new SqlConnection(fixture.Container.GetConnectionString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"CREATE DATABASE [{DatabaseName}]";
+        command.ExecuteNonQuery();
+    }
+
+    private void Run(params SqlScript[] scripts) => DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(scripts, Options)), Options);
     private static MigrationScripts Prepared(MigrationScriptResult preparation)
     {
         Assert.True(preparation.IsValid, preparation.Error);
@@ -331,13 +465,4 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
 
     private string HashFor(string objectName) => Scalar<string>(
         $"SELECT ContentsHash FROM ProgrammableObjectVersions WHERE ScriptName = 'TestScripts.ProgrammableObjects.{objectName}.sql'");
-
-    public void Dispose()
-    {
-        using var connection = new SqlConnection(fixture.Container.GetConnectionString());
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = $"IF DB_ID('{databaseName}') IS NOT NULL BEGIN ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{databaseName}]; END";
-        command.ExecuteNonQuery();
-    }
 }

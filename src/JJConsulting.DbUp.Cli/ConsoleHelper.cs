@@ -30,6 +30,15 @@ internal sealed class ConsoleHelper(string command, bool json, TextWriter output
         return 0;
     }
 
+    public int Complete(BaselineFileResult result)
+    {
+        if (json)
+            WriteJson(result, 0);
+        else
+            Console.WriteLine($"{(result.DryRun ? "Would create" : "Created")}: {result.Path}");
+        return 0;
+    }
+
     public int Complete(ValidationSummary summary)
     {
         if (json)
