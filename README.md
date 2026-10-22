@@ -39,14 +39,23 @@ dotnet tool run jjdbup --help
 For a global installation: `dotnet tool install --global JJConsulting.DbUp.Cli`.
 The commands below use `jjdbup`; for a local tool, prefix them with `dotnet tool run`.
 
-Configure `appsettings.json`:
+Run from your project or scripts directory without specifying a source:
+
+```sh
+jjdbup validate
+jjdbup new V003_AddStatus
+jjdbup migrate
+```
+
+For explicit configuration, use `appsettings.json`:
 
 ```json
 {
-  "ConnectionStrings": {
+  "MyApplication": {
     "DefaultConnection": "Server=localhost;Database=OrderDb;Integrated Security=True;TrustServerCertificate=True"
   },
   "DatabaseMigrations": {
+    "ConnectionStringKey": "MyApplication:DefaultConnection",
     "BaseNamespace": "Order.Api.Database",
     "ScriptsPath": "Database",
     "EnsureDatabase": true
@@ -54,8 +63,6 @@ Configure `appsettings.json`:
 }
 ```
 
-`ScriptsPath` is the only added property in `DbUpOptions`; it points to the scripts directory.
-Use `--assembly Order.Api.dll` to read compiled embedded resources instead. Select a connection with `--connection-name` (default: `DefaultConnection`).
 `BaseNamespace` retains its existing behavior: script names must start with `<BaseNamespace>.Migrations.` or `<BaseNamespace>.ProgrammableObjects.`.
 Folder scripts use that same prefix. Keep it unchanged to preserve migration history.
 

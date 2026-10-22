@@ -8,7 +8,7 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
     public string RequireConnection() => !string.IsNullOrWhiteSpace(ConnectionString)
         ? ConnectionString
         : throw new CliException(
-            "A connection string is required. Set ConnectionStrings__DefaultConnection or --connection-string.");
+            "A connection string is required. Set the configuration value selected by DatabaseMigrations:ConnectionStringKey (default: ConnectionStrings:DefaultConnection), or use --connection-string.");
 
     public static DbUpOptionsLoader Load(DbUpCommandOptions args, string workingDirectory, IEnumerable<KeyValuePair<string, string?>>? environment = null)
     {
@@ -18,15 +18,34 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
         var config = BuildConfiguration(args, file, environmentConfig);
         var source = ResolveSource(args, environmentConfig, file, workingDirectory, configPath);
         var options = BindMigrationOptions(config);
+        if (string.IsNullOrWhiteSpace(options.BaseNamespace))
+        {
+            if (source.Assembly is not null)
+                throw new CliException("Set --base-namespace when using --assembly.");
+            options.BaseNamespace = DirectoryDiscovery.InferNamespace(source.ScriptsPath!);
+        }
         options.ScriptsPath = source.ScriptsPath;
-        var connection = args.ConnectionString ?? config.GetConnectionString(args.ConnectionName ?? "DefaultConnection");
+        string connectionKey;
+        if (args.ConnectionName is not null)
+            connectionKey = "ConnectionStrings:" + args.ConnectionName;
+        else
+            connectionKey = options.ConnectionStringKey;
+        if (args.ConnectionString is null && string.IsNullOrWhiteSpace(connectionKey))
+            throw new CliException("DatabaseMigrations:ConnectionStringKey must not be empty.");
+        var connection = args.ConnectionString ?? config[connectionKey];
 
         return new DbUpOptionsLoader(source.Assembly, connection, options);
     }
 
     private static string ResolveConfigPath(string? file, string workingDirectory)
     {
-        var path = Path.GetFullPath(file ?? "appsettings.json", workingDirectory);
+        string path;
+        if (file is null)
+            path = DirectoryDiscovery.Ancestors(workingDirectory)
+                .Select(directory => Path.Combine(directory.FullName, "appsettings.json"))
+                .FirstOrDefault(File.Exists) ?? Path.Combine(workingDirectory, "appsettings.json");
+        else
+            path = Path.GetFullPath(file, workingDirectory);
         if (file is not null && !File.Exists(path))
             throw new CliException("The configuration file does not exist.");
         return path;
@@ -74,7 +93,9 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
             return Script.Resolve(environmentPath, null, workingDirectory);
 
         var filePath = file.GetSection(DbUpOptions.SectionName)["ScriptsPath"];
-        return Script.Resolve(filePath, null, Path.GetDirectoryName(configPath)!);
+        return filePath is not null
+            ? Script.Resolve(filePath, null, Path.GetDirectoryName(configPath)!)
+            : new Script(DirectoryDiscovery.FindScripts(workingDirectory), null);
     }
 
     private static DbUpOptions BindMigrationOptions(IConfiguration config)
@@ -89,8 +110,6 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
             throw new CliException("Invalid DatabaseMigrations settings.");
         }
 
-        if (string.IsNullOrWhiteSpace(options.BaseNamespace))
-            throw new CliException("BaseNamespace is required.");
         return options;
     }
 

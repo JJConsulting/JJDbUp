@@ -6,10 +6,10 @@ namespace JJConsulting.DbUp.Cli;
 
 internal class DbUpCommandOptions : CommandSettings
 {
-    [CommandOption("--config <FILE>"), Description("Configuration file; defaults to appsettings.json.")]
+    [CommandOption("--config <FILE>"), Description("Configuration file; searches current and parent directories for appsettings.json.")]
     public string? Config { get; set; }
 
-    [CommandOption("--scripts|--scripts-path <DIRECTORY>"), Description("Root containing Migrations/ and ProgrammableObjects/.")]
+    [CommandOption("--scripts|--scripts-path <DIRECTORY>"), Description("Root containing Migrations/ and ProgrammableObjects/; discovered from the current directory by default.")]
     public string? ScriptsPath { get; set; }
 
     [CommandOption("--assembly <DLL>"), Description("Compiled assembly containing embedded SQL resources.")]
@@ -18,10 +18,10 @@ internal class DbUpCommandOptions : CommandSettings
     [CommandOption("--connection-string <CONNECTION>"), Description("SQL Server connection string; prefer environment variables for secrets.")]
     public string? ConnectionString { get; set; }
 
-    [CommandOption("--connection-name <NAME>"), Description("ConnectionStrings key; defaults to DefaultConnection.")]
+    [CommandOption("--connection-name <NAME>"), Description("ConnectionStrings name; overrides DatabaseMigrations:ConnectionStringKey.")]
     public string? ConnectionName { get; set; }
 
-    [CommandOption("--base-namespace <NAMESPACE>"), Description("Base namespace used to select and identify SQL scripts.")]
+    [CommandOption("--base-namespace <NAMESPACE>"), Description("Script namespace; inferred from the project and scripts directory by default.")]
     public string? BaseNamespace { get; set; }
 
     [CommandOption("--schema <SCHEMA>"), Description("Journal schema; defaults to dbo.")]

@@ -144,6 +144,51 @@ public sealed class CliTests : IDisposable
     }
 
     [Fact]
+    public void ConnectionStringKey_ResolvesCustomSectionAndHonorsOverrides()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"ConnectionStringKey":"JJMasterData:ConnectionString"},
+             "JJMasterData":{"ConnectionString":"custom-connection"},
+             "ConnectionStrings":{"Other":"named-connection"}}
+            """);
+        var args = new DbUpCommandOptions();
+        Assert.Equal("custom-connection", DbUpOptionsLoader.Load(args, _directory, []).RequireConnection());
+        Assert.Equal("environment-connection", DbUpOptionsLoader.Load(args, _directory,
+            new Dictionary<string, string?>
+            {
+                ["DatabaseMigrations__ConnectionStringKey"] = "Another:Connection",
+                ["Another__Connection"] = "environment-connection"
+            }).RequireConnection());
+        Assert.Equal("overridden-value", DbUpOptionsLoader.Load(args, _directory,
+            new Dictionary<string, string?> { ["JJMasterData__ConnectionString"] = "overridden-value" }).RequireConnection());
+        args.ConnectionName = "Other";
+        Assert.Equal("named-connection", DbUpOptionsLoader.Load(args, _directory, []).RequireConnection());
+        args.ConnectionString = "direct-connection";
+        Assert.Equal("direct-connection", DbUpOptionsLoader.Load(args, _directory, []).RequireConnection());
+    }
+
+    [Fact]
+    public void ConnectionStringKey_MissingValueDoesNotFallBackToAnotherDatabase()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"ConnectionStringKey":"JJMasterData:ConnectionString"},
+             "ConnectionStrings":{"DefaultConnection":"different-database"}}
+            """);
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, []);
+        Assert.Throws<CliException>(() => settings.RequireConnection());
+    }
+
+    [Fact]
+    public void ConnectionStringKey_DefaultAndEmptyKeyAreHandled()
+    {
+        Assert.Equal("ConnectionStrings:DefaultConnection",
+            DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, []).Migrations.ConnectionStringKey);
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"),
+            """{"DatabaseMigrations":{"ConnectionStringKey":" "}}""");
+        Assert.Equal(2, Run("status").Code);
+    }
+
+    [Fact]
     public void New_RejectsAssemblySource()
     {
         Assert.Equal(2, Run("new", "V002_Test", "--assembly", typeof(CliTests).Assembly.Location,
@@ -242,6 +287,82 @@ public sealed class CliTests : IDisposable
         });
         Assert.Contains("[red].sql", output.ToString());
         Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public void Discovery_ValidatesScriptsWithoutSourceOrNamespace()
+    {
+        Scripts();
+        Assert.Equal(0, Run("validate").Code);
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, []);
+        Assert.Equal(Path.Combine(_directory, "sql"), settings.Migrations.ScriptsPath);
+        Assert.Equal("sql", settings.Migrations.BaseNamespace);
+    }
+
+    [Fact]
+    public void Discovery_UsesProjectNamespaceAndParentConfigurationFromNestedDirectory()
+    {
+        var root = Scripts();
+        File.WriteAllText(Path.Combine(_directory, "Order.Api.csproj"),
+            "<Project><PropertyGroup><RootNamespace>Orders</RootNamespace></PropertyGroup></Project>");
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"),
+            """{"ConnectionStrings":{"DefaultConnection":"parent-connection"}}""");
+        var nested = Path.Combine(root, "Migrations", "Nested");
+        Directory.CreateDirectory(nested);
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), nested, []);
+        Assert.Equal(root, settings.Migrations.ScriptsPath);
+        Assert.Equal("Orders.sql", settings.Migrations.BaseNamespace);
+        Assert.Equal("parent-connection", settings.ConnectionString);
+    }
+
+    [Fact]
+    public void Discovery_RejectsAmbiguousRootsAndAcceptsExplicitSelection()
+    {
+        Scripts();
+        Directory.CreateDirectory(Path.Combine(_directory, "Database", "Migrations"));
+        var result = Run("validate");
+        Assert.Equal(2, result.Code);
+        Assert.Contains("Multiple scripts directories", result.Output + result.Error);
+        Assert.Equal(0, Run("validate", "--scripts", "sql").Code);
+    }
+
+    [Fact]
+    public void Discovery_InitializesEmptyDirectoryWithNewCommand()
+    {
+        Assert.Equal(0, Run("new", "V001_Initial").Code);
+        Assert.True(File.Exists(Path.Combine(_directory, "Migrations", "V001_Initial.sql")));
+        Assert.Equal(0, Run("validate").Code);
+    }
+
+    [Fact]
+    public void Discovery_UsesProjectNameWhenRootNamespaceIsAbsent()
+    {
+        Scripts();
+        File.WriteAllText(Path.Combine(_directory, "Order.Api.csproj"), "<Project />");
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, []);
+        Assert.Equal("Order.Api.sql", settings.Migrations.BaseNamespace);
+    }
+
+    [Theory]
+    [InlineData("<Project>")]
+    [InlineData("<Project><RootNamespace>$(Unknown)</RootNamespace></Project>")]
+    [InlineData("<Project><RootNamespace>One</RootNamespace><RootNamespace>Two</RootNamespace></Project>")]
+    public void Discovery_UnreadableOrAmbiguousProjectRequiresExplicitNamespace(string project)
+    {
+        Scripts();
+        File.WriteAllText(Path.Combine(_directory, "Order.Api.csproj"), project);
+        Assert.Equal(2, Run("validate").Code);
+        Assert.Equal(0, Run("validate", "--base-namespace", "Explicit").Code);
+    }
+
+    [Fact]
+    public void Discovery_DoesNotEscapeRepositoryBoundary()
+    {
+        Scripts();
+        var repository = Path.Combine(_directory, "OtherRepository");
+        Directory.CreateDirectory(Path.Combine(repository, ".git"));
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), repository, []);
+        Assert.Equal(repository, settings.Migrations.ScriptsPath);
     }
 
     public void Dispose() => Directory.Delete(_directory, true);
