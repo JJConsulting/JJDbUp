@@ -13,10 +13,10 @@ namespace JJConsulting.DbUp;
 
 public static class DatabaseMigrator
 {
-    /// <summary>Loads embedded scripts and applies them using the configured namespace.</summary>
-    public static void Migrate(string connectionString, Assembly scriptsAssembly, string baseNamespace)
+    /// <summary>Loads embedded scripts and applies them using default options.</summary>
+    public static void Migrate(string connectionString, Assembly scriptsAssembly)
     {
-        Migrate(connectionString, scriptsAssembly, new DbUpOptions { BaseNamespace = baseNamespace });
+        Migrate(connectionString, scriptsAssembly, new DbUpOptions());
     }
 
     /// <summary>Loads, validates and applies embedded scripts.</summary>

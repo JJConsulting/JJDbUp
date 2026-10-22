@@ -13,17 +13,24 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
     public static DbUpOptionsLoader Load(DbUpCommandOptions args, string workingDirectory, IEnumerable<KeyValuePair<string, string?>>? environment = null)
     {
         var configPath = ResolveConfigPath(args.Config, workingDirectory);
-        var file = new ConfigurationBuilder().AddJsonFile(configPath, optional: args.Config is null).Build();
         var environmentConfig = LoadEnvironment(environment);
+        var environmentName = environmentConfig["DOTNET_ENVIRONMENT"];
+        if (string.IsNullOrWhiteSpace(environmentName))
+            environmentName = environmentConfig["ASPNETCORE_ENVIRONMENT"];
+        if (string.IsNullOrWhiteSpace(environmentName))
+            environmentName = "Production";
+        if (environmentName.IndexOfAny(['/', '\\', ':']) >= 0 || environmentName is "." or "..")
+            throw new CliException("The environment name must not contain a path.");
+        var environmentPath = Path.Combine(Path.GetDirectoryName(configPath)!,
+            Path.GetFileNameWithoutExtension(configPath) + "." + environmentName + Path.GetExtension(configPath));
+        var environmentFile = new ConfigurationBuilder().AddJsonFile(environmentPath, optional: true).Build();
+        var file = new ConfigurationBuilder()
+            .AddJsonFile(configPath, optional: args.Config is null)
+            .AddConfiguration(environmentFile)
+            .Build();
         var config = BuildConfiguration(args, file, environmentConfig);
         var source = ResolveSource(args, environmentConfig, file, workingDirectory, configPath);
-        var options = BindMigrationOptions(config);
-        if (string.IsNullOrWhiteSpace(options.BaseNamespace))
-        {
-            if (source.Assembly is not null)
-                throw new CliException("Set --base-namespace when using --assembly.");
-            options.BaseNamespace = DirectoryDiscovery.InferNamespace(source.ScriptsPath!);
-        }
+        var options = BindMigrationOptions(config, environmentFile, environmentConfig);
         options.ScriptsPath = source.ScriptsPath;
         string connectionKey;
         if (args.ConnectionName is not null)
@@ -51,7 +58,7 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
         return path;
     }
 
-    private static IConfiguration LoadEnvironment(IEnumerable<KeyValuePair<string, string?>>? environment)
+    private static IConfigurationRoot LoadEnvironment(IEnumerable<KeyValuePair<string, string?>>? environment)
     {
         var builder = new ConfigurationBuilder();
         if (environment is null)
@@ -66,7 +73,6 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
     {
         var overrides = new Dictionary<string, string?>
         {
-            ["DatabaseMigrations:BaseNamespace"] = args.BaseNamespace,
             ["DatabaseMigrations:Schema"] = args.Schema,
             ["DatabaseMigrations:MigrationJournal"] = args.MigrationJournal,
             ["DatabaseMigrations:ProgrammableObjectJournal"] = args.ObjectJournal,
@@ -98,12 +104,21 @@ internal sealed record DbUpOptionsLoader(string? Assembly, string? ConnectionStr
             : new Script(DirectoryDiscovery.FindScripts(workingDirectory), null);
     }
 
-    private static DbUpOptions BindMigrationOptions(IConfiguration config)
+    private static DbUpOptions BindMigrationOptions(IConfiguration config, params IConfigurationRoot[] layers)
     {
         var options = new DbUpOptions();
         try
         {
             config.GetSection(DbUpOptions.SectionName).Bind(options);
+            // Migration adoption is a selection, so a higher-priority list replaces the entire inherited list.
+            // This also lets Local use [] to run the baseline instead of marking it as already executed.
+            const string selectionKey = DbUpOptions.SectionName + ":ScriptsToMarkAsExecuted";
+            foreach (var layer in layers)
+            {
+                var selection = layer.GetSection(selectionKey);
+                if (selection.GetChildren().Any() || layer.Providers.Any(provider => provider.TryGet(selectionKey, out _)))
+                    options.ScriptsToMarkAsExecuted = selection.Get<string[]>() ?? [];
+            }
         }
         catch (InvalidOperationException)
         {

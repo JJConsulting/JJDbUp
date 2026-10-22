@@ -12,7 +12,7 @@ public sealed class DbUpServiceCollectionExtensionsTests
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["DatabaseMigrations:BaseNamespace"] = "App.Database",
+            ["DatabaseMigrations:ConnectionStringKey"] = "App:Connection",
             ["DatabaseMigrations:ScriptsPath"] = "Database",
             ["DatabaseMigrations:Schema"] = "migrations",
             ["DatabaseMigrations:MigrationJournal"] = "AppliedMigrations",
@@ -27,7 +27,7 @@ public sealed class DbUpServiceCollectionExtensionsTests
         using var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<IOptions<DbUpOptions>>().Value;
 
-        Assert.Equal("App.Database", options.BaseNamespace);
+        Assert.Equal("App:Connection", options.ConnectionStringKey);
         Assert.Equal("Database", options.ScriptsPath);
         Assert.Equal("migrations", options.Schema);
         Assert.Equal("AppliedMigrations", options.MigrationJournal);
@@ -35,8 +35,6 @@ public sealed class DbUpServiceCollectionExtensionsTests
         Assert.Equal("#depends", options.DependencyDirective);
         Assert.False(options.EnsureDatabase);
         Assert.Equal(["V001_CreateTable.sql"], options.ScriptsToMarkAsExecuted);
-        Assert.Equal("App.Database.Migrations.", options.MigrationsPrefix);
-        Assert.Equal("App.Database.ProgrammableObjects.", options.ProgrammableObjectsPrefix);
     }
 
     [Fact]
@@ -48,10 +46,8 @@ public sealed class DbUpServiceCollectionExtensionsTests
 
         var options = provider.GetRequiredService<IOptions<DbUpOptions>>().Value;
 
-        Assert.Equal(string.Empty, options.BaseNamespace);
+        Assert.Equal("ConnectionStrings:DefaultConnection", options.ConnectionStringKey);
         Assert.Null(options.ScriptsPath);
-        Assert.Equal(".Migrations.", options.MigrationsPrefix);
-        Assert.Equal(".ProgrammableObjects.", options.ProgrammableObjectsPrefix);
         Assert.Equal("dbo", options.Schema);
         Assert.Equal("SchemaVersions", options.MigrationJournal);
         Assert.Equal("ProgrammableObjectVersions", options.ProgrammableObjectJournal);

@@ -25,7 +25,7 @@ public sealed class BaselineTests : IDisposable
     public void BaselineName_RejectsInvalidNamesBeforeConnecting(string name)
     {
         Assert.Throws<ArgumentException>(() =>
-            BaselineService.Generate("invalid", new DbUpOptions { BaseNamespace = "Test" }, name));
+            BaselineService.Generate("invalid", new DbUpOptions(), name));
     }
 
     [Fact]

@@ -12,7 +12,7 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
     private string ConnectionString { get; } = fixture.CreateDatabaseConnectionString();
     private string DatabaseName => new SqlConnectionStringBuilder(ConnectionString).InitialCatalog;
 
-    private static DbUpOptions Options => new() { BaseNamespace = "TestScripts" };
+    private static DbUpOptions Options => new();
 
     private static SqlScript InitialMigration => Migration("V001_CreateTables", """
         CREATE TABLE Items (Id int PRIMARY KEY, Name nvarchar(100) NOT NULL);
@@ -30,7 +30,7 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
             if (useOptions)
                 DatabaseMigrator.Migrate(ConnectionString, typeof(DatabaseMigratorTests).Assembly, Options);
             else
-                DatabaseMigrator.Migrate(ConnectionString, typeof(DatabaseMigratorTests).Assembly, "TestScripts");
+                DatabaseMigrator.Migrate(ConnectionString, typeof(DatabaseMigratorTests).Assembly);
         }
 
         Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
@@ -403,7 +403,7 @@ public sealed partial class DatabaseMigratorTests(SqlServerFixture fixture) : IC
     public void AssemblyPreparation_IgnoresScriptsPathAndPreservesJournalNames()
     {
         var assembly = typeof(DatabaseMigratorTests).Assembly;
-        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(assembly, new DbUpOptions { BaseNamespace = "TestScripts" })), Options);
+        DatabaseMigrator.Migrate(ConnectionString, Prepared(MigrationScriptService.GetScripts(assembly, new DbUpOptions())), Options);
         var options = Options;
         options.ScriptsPath = "missing-directory-must-not-be-used";
 

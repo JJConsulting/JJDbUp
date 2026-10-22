@@ -21,9 +21,6 @@ internal class DbUpCommandOptions : CommandSettings
     [CommandOption("--connection-name <NAME>"), Description("ConnectionStrings name; overrides DatabaseMigrations:ConnectionStringKey.")]
     public string? ConnectionName { get; set; }
 
-    [CommandOption("--base-namespace <NAMESPACE>"), Description("Script namespace; inferred from the project and scripts directory by default.")]
-    public string? BaseNamespace { get; set; }
-
     [CommandOption("--schema <SCHEMA>"), Description("Journal schema; defaults to dbo.")]
     public string? Schema { get; set; }
 

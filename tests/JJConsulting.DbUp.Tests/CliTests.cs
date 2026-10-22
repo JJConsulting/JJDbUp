@@ -7,7 +7,7 @@ public sealed class CliTests : IDisposable
 {
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "jjdbup-tests-" + Guid.NewGuid().ToString("N"));
 
-    public CliTests() => Directory.CreateDirectory(_directory);
+    public CliTests() => Directory.CreateDirectory(Path.Combine(_directory, ".git"));
 
     private (int Code, string Output, string Error) Run(params string[] args)
     {
@@ -47,13 +47,13 @@ public sealed class CliTests : IDisposable
     [InlineData("validate", "--output", "xml")]
     [InlineData("validate", "--config", "missing.json")]
     [InlineData("validate", "--scripts", ".")]
-    [InlineData("validate", "--scripts", "missing", "--base-namespace", "Test")]
+    [InlineData("validate", "--scripts", "missing")]
     public void InvalidArguments_ReturnUsageCode(params string[] args) => Assert.Equal(2, Run(args).Code);
 
     [Fact]
     public void ValidateFolder_IsOfflineAndEmitsOneJsonResult()
     {
-        var result = Run("validate", "--scripts", Scripts(), "--base-namespace", "TestScripts", "--output", "json");
+        var result = Run("validate", "--scripts", Scripts(), "--output", "json");
         Assert.Equal(0, result.Code);
         using var json = JsonDocument.Parse(result.Output);
         Assert.Equal("validate", json.RootElement.GetProperty("command").GetString());
@@ -67,32 +67,197 @@ public sealed class CliTests : IDisposable
         var sub = Path.Combine(_directory, "config");
         Directory.CreateDirectory(sub);
         File.WriteAllText(Path.Combine(sub, "appsettings.json"), """
-            {"DatabaseMigrations":{"BaseNamespace":"File","EnsureDatabase":true,
+            {"DatabaseMigrations":{"Schema":"File","EnsureDatabase":true,
              "ScriptsPath":"../sql"},
              "ConnectionStrings":{"Other":"file-connection"}}
             """);
-        var options = new DbUpCommandOptions { Config = "config/appsettings.json", BaseNamespace = "Argument", EnsureDatabase = false, ConnectionName = "Other" };
+        var options = new DbUpCommandOptions { Config = "config/appsettings.json", Schema = "Argument", EnsureDatabase = false, ConnectionName = "Other" };
         var config = DbUpOptionsLoader.Load(options, _directory, new Dictionary<string, string?>
         {
-            ["DatabaseMigrations__BaseNamespace"] = "Environment",
+            ["DatabaseMigrations__Schema"] = "Environment",
             ["ConnectionStrings__Other"] = "environment-connection"
         });
         Assert.Equal(Path.Combine(_directory, "sql"), config.Migrations.ScriptsPath);
-        Assert.Equal("Argument", config.Migrations.BaseNamespace);
+        Assert.Equal("Argument", config.Migrations.Schema);
         Assert.False(config.Migrations.EnsureDatabase);
         Assert.Equal("environment-connection", config.ConnectionString);
         var environmentOnly = DbUpOptionsLoader.Load(new DbUpCommandOptions { ScriptsPath = "relative" }, _directory,
-            new Dictionary<string, string?> { ["DatabaseMigrations__BaseNamespace"] = "Environment" });
-        Assert.Equal("Environment", environmentOnly.Migrations.BaseNamespace);
+            new Dictionary<string, string?> { ["DatabaseMigrations__Schema"] = "Environment" });
+        Assert.Equal("Environment", environmentOnly.Migrations.Schema);
         Assert.True(environmentOnly.Migrations.EnsureDatabase);
         Assert.Equal(Path.Combine(_directory, "relative"), environmentOnly.Migrations.ScriptsPath);
+    }
+
+    [Fact]
+    public void Configuration_EnvironmentJsonOverridesBaseAndKeepsUnchangedValues()
+    {
+        var directory = Path.Combine(_directory, "config");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"ConnectionStringKey":"JJMasterData:ConnectionString",
+             "Schema":"base_schema","MigrationJournal":"AppVersions","EnsureDatabase":true,
+             "ScriptsPath":"../base-sql","ScriptsToMarkAsExecuted":["Old.sql","Another.sql"]},
+             "JJMasterData":{"ConnectionString":"base-connection"}}
+            """);
+        File.WriteAllText(Path.Combine(directory, "appsettings.Homolog.json"), """
+            {"DatabaseMigrations":{"Schema":"homolog_schema","EnsureDatabase":false,
+             "ScriptsPath":"../homolog-sql","ScriptsToMarkAsExecuted":["Baseline.sql"]},
+             "JJMasterData":{"ConnectionString":"homolog-connection"}}
+            """);
+
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions { Config = "config/appsettings.json" }, _directory,
+            new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = "Homolog" });
+
+        Assert.Equal("homolog-connection", settings.RequireConnection());
+        Assert.Equal("homolog_schema", settings.Migrations.Schema);
+        Assert.Equal("AppVersions", settings.Migrations.MigrationJournal);
+        Assert.False(settings.Migrations.EnsureDatabase);
+        Assert.Equal(["Baseline.sql"], settings.Migrations.ScriptsToMarkAsExecuted);
+        Assert.Equal(Path.Combine(_directory, "homolog-sql"), settings.Migrations.ScriptsPath);
+    }
+
+    [Theory]
+    [InlineData("Local", "Homolog", "Local")]
+    [InlineData(null, "Homolog", "Homolog")]
+    [InlineData(" ", "Homolog", "Homolog")]
+    [InlineData(null, null, "Production")]
+    public void Configuration_EnvironmentSelectionUsesDotnetThenAspNetThenProduction(string? dotnet, string? aspnet, string expected)
+    {
+        foreach (var name in new[] { "Local", "Homolog", "Production" })
+            File.WriteAllText(Path.Combine(_directory, $"appsettings.{name}.json"),
+                JsonSerializer.Serialize(new { JJMasterData = new { ConnectionString = name } }));
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"),
+            """{"DatabaseMigrations":{"ConnectionStringKey":"JJMasterData:ConnectionString"}}""");
+
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, new Dictionary<string, string?>
+        {
+            ["DOTNET_ENVIRONMENT"] = dotnet,
+            ["ASPNETCORE_ENVIRONMENT"] = aspnet
+        });
+
+        Assert.Equal(expected, settings.RequireConnection());
+    }
+
+    [Fact]
+    public void Configuration_EnvironmentVariablesAndArgumentsOverrideEnvironmentJson()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.Homolog.json"), """
+            {"DatabaseMigrations":{"Schema":"json_schema","EnsureDatabase":true,"ScriptsPath":"json-sql"},
+             "ConnectionStrings":{"DefaultConnection":"json-connection"}}
+            """);
+        var environment = new Dictionary<string, string?>
+        {
+            ["DOTNET_ENVIRONMENT"] = "Homolog",
+            ["DatabaseMigrations__Schema"] = "environment_schema",
+            ["DatabaseMigrations__EnsureDatabase"] = "false",
+            ["DatabaseMigrations__ScriptsPath"] = "environment-sql",
+            ["ConnectionStrings__DefaultConnection"] = "environment-connection"
+        };
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, environment);
+        Assert.Equal("environment_schema", settings.Migrations.Schema);
+        Assert.False(settings.Migrations.EnsureDatabase);
+        Assert.Equal("environment-connection", settings.RequireConnection());
+        Assert.Equal(Path.Combine(_directory, "environment-sql"), settings.Migrations.ScriptsPath);
+
+        settings = DbUpOptionsLoader.Load(new DbUpCommandOptions
+        {
+            Schema = "argument_schema", EnsureDatabase = true, ScriptsPath = "argument-sql", ConnectionString = "argument-connection"
+        }, _directory, environment);
+        Assert.Equal("argument_schema", settings.Migrations.Schema);
+        Assert.True(settings.Migrations.EnsureDatabase);
+        Assert.Equal("argument-connection", settings.RequireConnection());
+        Assert.Equal(Path.Combine(_directory, "argument-sql"), settings.Migrations.ScriptsPath);
+    }
+
+    [Fact]
+    public void Configuration_LocalEmptyMigrationSelectionClearsInheritedBaseline()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"EnsureDatabase":false,"ScriptsToMarkAsExecuted":["Baseline.sql"]}}
+            """);
+        File.WriteAllText(Path.Combine(_directory, "appsettings.Local.json"), """
+            {"DatabaseMigrations":{"EnsureDatabase":true,"ScriptsToMarkAsExecuted":[]}}
+            """);
+        var environment = new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = "Local" };
+
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, environment);
+
+        Assert.True(settings.Migrations.EnsureDatabase);
+        Assert.Empty(settings.Migrations.ScriptsToMarkAsExecuted);
+        environment["DatabaseMigrations__ScriptsToMarkAsExecuted__0"] = "Environment.sql";
+        settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, environment);
+        Assert.Equal(["Environment.sql"], settings.Migrations.ScriptsToMarkAsExecuted);
+    }
+
+    [Fact]
+    public void Configuration_CustomFilenameUsesEnvironmentOverlayBesideSelectedFile()
+    {
+        var directory = Path.Combine(_directory, "config");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "migrations.json"),
+            """{"DatabaseMigrations":{"ScriptsPath":"../sql","Schema":"base_schema"}}""");
+        File.WriteAllText(Path.Combine(directory, "migrations.Homolog.json"),
+            """{"DatabaseMigrations":{"Schema":"homolog_schema"}}""");
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions { Config = "config/migrations.json" }, _directory,
+            new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = "Homolog" });
+        Assert.Equal("homolog_schema", settings.Migrations.Schema);
+        Assert.Equal(Path.Combine(_directory, "sql"), settings.Migrations.ScriptsPath);
+    }
+
+    [Fact]
+    public void Configuration_ValidateUsesEnvironmentFileFromDiscoveredParent()
+    {
+        var scripts = Scripts();
+        var nested = Path.Combine(scripts, "Migrations", "Nested");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"),
+            """{"DatabaseMigrations":{"ScriptsPath":"missing-base-sql"}}""");
+        File.WriteAllText(Path.Combine(_directory, "appsettings.Local.json"),
+            """{"DatabaseMigrations":{"ScriptsPath":"sql"}}""");
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var code = CliApplication.Run(["validate", "--output", "json"], output, error, nested,
+            new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = "Local" });
+        Assert.Equal(0, code);
+        using var json = JsonDocument.Parse(output.ToString());
+        Assert.Equal(1, json.RootElement.GetProperty("data").GetProperty("scriptCount").GetInt32());
+        Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public void Configuration_MissingEnvironmentFileKeepsBaseConfiguration()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"),
+            """{"DatabaseMigrations":{"Schema":"base_schema"},"ConnectionStrings":{"DefaultConnection":"base-connection"}}""");
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory,
+            new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = "Missing" });
+        Assert.Equal("base_schema", settings.Migrations.Schema);
+        Assert.Equal("base-connection", settings.RequireConnection());
+    }
+
+    [Fact]
+    public void Configuration_InvalidEnvironmentJsonFailsInsteadOfUsingBaseConnection()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.Production.json"), "{ invalid json");
+        var result = Run("validate", "--scripts", Scripts());
+        Assert.Equal(2, result.Code);
+    }
+
+    [Theory]
+    [InlineData("../Other")]
+    [InlineData("..\\Other")]
+    [InlineData("C:Other")]
+    public void Configuration_EnvironmentNameCannotSelectAnotherDirectory(string name)
+    {
+        Assert.Throws<CliException>(() => DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory,
+            new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = name }));
     }
 
     [Fact]
     public void ExplicitSource_OverridesConfiguredOtherSource()
     {
         File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
-            {"DatabaseMigrations":{"BaseNamespace":"TestScripts","ScriptsPath":"missing-directory"}}
+            {"DatabaseMigrations":{"ScriptsPath":"missing-directory"}}
             """);
         Assert.Equal(0, Run("validate", "--scripts", Scripts()).Code);
         Assert.Equal(0, Run("validate", "--assembly", typeof(CliTests).Assembly.Location).Code);
@@ -103,7 +268,7 @@ public sealed class CliTests : IDisposable
     public void EnvironmentSource_ReplacesFileSourceAndUsesWorkingDirectory()
     {
         File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
-            {"DatabaseMigrations":{"BaseNamespace":"TestScripts","ScriptsPath":"file-directory"}}
+            {"DatabaseMigrations":{"ScriptsPath":"file-directory"}}
             """);
         var config = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory,
             new Dictionary<string, string?> { ["DatabaseMigrations__ScriptsPath"] = "environment-sql" });
@@ -115,9 +280,9 @@ public sealed class CliTests : IDisposable
     public void InvalidJsonAndInvalidBoolean_AreConfigurationErrors()
     {
         File.WriteAllText(Path.Combine(_directory, "appsettings.json"), "{ invalid json");
-        Assert.Equal(2, Run("validate", "--scripts", Scripts(), "--base-namespace", "Test").Code);
+        Assert.Equal(2, Run("validate", "--scripts", Scripts()).Code);
         File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
-            {"DatabaseMigrations":{"BaseNamespace":"Test","EnsureDatabase":"invalid","ScriptsPath":"sql"}}
+            {"DatabaseMigrations":{"EnsureDatabase":"invalid","ScriptsPath":"sql"}}
             """);
         Assert.Equal(2, Run("validate").Code);
         Assert.Equal(0, Run("validate", "--ensure-database", "true").Code);
@@ -128,7 +293,7 @@ public sealed class CliTests : IDisposable
     {
         Scripts();
         File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
-            {"DatabaseMigrations":{"ScriptsPath":"sql","BaseNamespace":"TestScripts"},
+            {"DatabaseMigrations":{"ScriptsPath":"sql"},
              "ConnectionStrings":{"DefaultConnection":"default-connection","Other":"other-connection"}}
             """);
         Assert.Equal(0, Run("validate").Code);
@@ -191,32 +356,30 @@ public sealed class CliTests : IDisposable
     [Fact]
     public void New_RejectsAssemblySource()
     {
-        Assert.Equal(2, Run("new", "V002_Test", "--assembly", typeof(CliTests).Assembly.Location,
-            "--base-namespace", "TestScripts").Code);
+        Assert.Equal(2, Run("new", "V002_Test", "--assembly", typeof(CliTests).Assembly.Location).Code);
     }
 
     [Fact]
     public void Baseline_RejectsAssemblyAndInvalidNamesWithoutConnecting()
     {
         Assert.Equal(2, Run("baseline", "B005", "--assembly", typeof(CliTests).Assembly.Location,
-            "--base-namespace", "TestScripts", "--connection-string", "invalid").Code);
+            "--connection-string", "invalid").Code);
         foreach (var name in new[] { "../B005", "Nested/B005", "Nested\\B005" })
-            Assert.Equal(2, Run("baseline", name, "--scripts", Scripts(), "--base-namespace", "TestScripts",
-                "--connection-string", "invalid", "--dry").Code);
+            Assert.Equal(2, Run("baseline", name, "--scripts", Scripts(), "--connection-string", "invalid", "--dry").Code);
     }
 
     [Fact]
     public void New_CreatesNestedFilesAndDoesNotOverwrite()
     {
-        var result = Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql", "--base-namespace", "Test");
+        var result = Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql");
         Assert.Equal(0, result.Code);
         var path = Path.Combine(_directory, "sql", "ProgrammableObjects", "Views", "ItemNames.sql");
         Assert.Contains("CREATE OR ALTER", File.ReadAllText(path));
-        Assert.Equal(2, Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql", "--base-namespace", "Test").Code);
-        Assert.Equal(0, Run("new", "V002_Test.sql", "--scripts", "sql", "--base-namespace", "Test").Code);
+        Assert.Equal(2, Run("new", "Views/ItemNames", "--type", "object", "--scripts", "sql").Code);
+        Assert.Equal(0, Run("new", "V002_Test.sql", "--scripts", "sql").Code);
         Assert.True(File.Exists(Path.Combine(_directory, "sql", "Migrations", "V002_Test.sql")));
-        Assert.Equal(0, Run("new", "InitialSchema", "--scripts", "sql", "--base-namespace", "Test").Code);
-        Assert.Equal(0, Run("validate", "--scripts", "sql", "--base-namespace", "Test").Code);
+        Assert.Equal(0, Run("new", "InitialSchema", "--scripts", "sql").Code);
+        Assert.Equal(0, Run("validate", "--scripts", "sql").Code);
     }
 
     [Theory]
@@ -224,7 +387,7 @@ public sealed class CliTests : IDisposable
     [InlineData("#depends")]
     public void NewObject_CanBeValidatedWithoutEditingItsComment(string directive)
     {
-        string[] options = ["--scripts", "sql", "--base-namespace", "Test", "--dependency-directive", directive];
+        string[] options = ["--scripts", "sql", "--dependency-directive", directive];
         Assert.Equal(0, Run(["new", "Views/Example", "--type", "object", .. options]).Code);
 
         var result = Run(["validate", .. options]);
@@ -239,14 +402,14 @@ public sealed class CliTests : IDisposable
     [InlineData("/tmp/escape")]
     [InlineData("C:\\escape")]
     public void New_RejectsTraversal(string name) =>
-        Assert.Equal(2, Run("new", name, "--scripts", "sql", "--base-namespace", "Test").Code);
+        Assert.Equal(2, Run("new", name, "--scripts", "sql").Code);
 
     [Fact]
     public void New_RejectsSymlinkDirectories()
     {
         Directory.CreateDirectory(Path.Combine(_directory, "outside"));
         Directory.CreateSymbolicLink(Path.Combine(_directory, "linked"), Path.Combine(_directory, "outside"));
-        Assert.Equal(2, Run("new", "escape", "--scripts", "linked", "--base-namespace", "Test").Code);
+        Assert.Equal(2, Run("new", "escape", "--scripts", "linked").Code);
         Assert.Empty(Directory.EnumerateFiles(Path.Combine(_directory, "outside"), "*", SearchOption.AllDirectories));
     }
 
@@ -257,7 +420,7 @@ public sealed class CliTests : IDisposable
         Directory.CreateDirectory(Path.Combine(root, "Migrations", "Nested"));
         File.WriteAllText(Path.Combine(root, "Migrations", "Nested", "V002.sql"), "SELECT 1;");
         File.WriteAllText(Path.Combine(root, "Migrations", "Nested.V002.sql"), "SELECT 2;");
-        Assert.Equal(2, Run("validate", "--scripts", root, "--base-namespace", "Test").Code);
+        Assert.Equal(2, Run("validate", "--scripts", root).Code);
     }
 
     [Theory]
@@ -265,8 +428,7 @@ public sealed class CliTests : IDisposable
     [InlineData("migrate")]
     public void ParserAndConfigurationErrors_DoNotEchoSecretsAndEmitJson(string command, params string[] extra)
     {
-        var result = Run([command, "--scripts", Scripts(), "--base-namespace", "TestScripts",
-            "--connection-string", "secret-value-is-not-a-connection-string", "--output", "json", .. extra]);
+        var result = Run([command, "--scripts", Scripts(), "--connection-string", "secret-value-is-not-a-connection-string", "--output", "json", .. extra]);
         Assert.Equal(2, result.Code);
         Assert.DoesNotContain("secret-value", result.Output + result.Error);
         using var json = JsonDocument.Parse(result.Output);
@@ -296,7 +458,9 @@ public sealed class CliTests : IDisposable
         Assert.Equal(0, Run("validate").Code);
         var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, []);
         Assert.Equal(Path.Combine(_directory, "sql"), settings.Migrations.ScriptsPath);
-        Assert.Equal("sql", settings.Migrations.BaseNamespace);
+        var scripts = MigrationScriptService.GetScripts(settings.Migrations);
+        Assert.True(scripts.IsValid, scripts.Error);
+        Assert.Equal("sql.Migrations.V001.sql", Assert.Single(scripts.Scripts.Migrations).Name);
     }
 
     [Fact]
@@ -311,7 +475,9 @@ public sealed class CliTests : IDisposable
         Directory.CreateDirectory(nested);
         var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), nested, []);
         Assert.Equal(root, settings.Migrations.ScriptsPath);
-        Assert.Equal("Orders.sql", settings.Migrations.BaseNamespace);
+        var scripts = MigrationScriptService.GetScripts(settings.Migrations);
+        Assert.True(scripts.IsValid, scripts.Error);
+        Assert.Equal("Orders.sql.Migrations.V001.sql", Assert.Single(scripts.Scripts.Migrations).Name);
         Assert.Equal("parent-connection", settings.ConnectionString);
     }
 
@@ -340,19 +506,20 @@ public sealed class CliTests : IDisposable
         Scripts();
         File.WriteAllText(Path.Combine(_directory, "Order.Api.csproj"), "<Project />");
         var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, []);
-        Assert.Equal("Order.Api.sql", settings.Migrations.BaseNamespace);
+        var scripts = MigrationScriptService.GetScripts(settings.Migrations);
+        Assert.True(scripts.IsValid, scripts.Error);
+        Assert.Equal("Order.Api.sql.Migrations.V001.sql", Assert.Single(scripts.Scripts.Migrations).Name);
     }
 
     [Theory]
     [InlineData("<Project>")]
     [InlineData("<Project><RootNamespace>$(Unknown)</RootNamespace></Project>")]
     [InlineData("<Project><RootNamespace>One</RootNamespace><RootNamespace>Two</RootNamespace></Project>")]
-    public void Discovery_UnreadableOrAmbiguousProjectRequiresExplicitNamespace(string project)
+    public void Discovery_UnreadableOrAmbiguousProjectFailsWithoutInventingJournalNames(string project)
     {
         Scripts();
         File.WriteAllText(Path.Combine(_directory, "Order.Api.csproj"), project);
         Assert.Equal(2, Run("validate").Code);
-        Assert.Equal(0, Run("validate", "--base-namespace", "Explicit").Code);
     }
 
     [Fact]

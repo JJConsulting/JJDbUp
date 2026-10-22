@@ -56,15 +56,16 @@ For explicit configuration, use `appsettings.json`:
   },
   "DatabaseMigrations": {
     "ConnectionStringKey": "MyApplication:DefaultConnection",
-    "BaseNamespace": "Order.Api.Database",
     "ScriptsPath": "Database",
     "EnsureDatabase": true
   }
 }
 ```
 
-`BaseNamespace` retains its existing behavior: script names must start with `<BaseNamespace>.Migrations.` or `<BaseNamespace>.ProgrammableObjects.`.
-Folder scripts use that same prefix. Keep it unchanged to preserve migration history.
+Script names are derived automatically. For directories, the CLI uses the nearest `.csproj`'s `RootNamespace`
+(or project filename) and the relative scripts path; without a project, it uses the scripts directory name.
+Embedded scripts keep their original resource names and are selected by their `Migrations` or `ProgrammableObjects` category.
+Keep project namespaces, resource names and script locations stable to preserve migration history.
 
 | Command | Purpose |
 |---|---|
@@ -78,8 +79,13 @@ Folder scripts use that same prefix. Keep it unchanged to preserve migration his
 | `jjdbup mark-executed --script V001_CreateOrder.sql` | Record an already applied migration without executing SQL. Repeat `--script` for multiple files. |
 
 Configuration priority: **arguments → environment → JSON → defaults**. Use `--config <file>` to select another JSON file.
+The CLI overlays `appsettings.{environment}.json` from the same directory on `appsettings.json`.
+The environment is selected by `DOTNET_ENVIRONMENT`, then `ASPNETCORE_ENVIRONMENT`, defaulting to `Production`.
+The environment file is optional. With a custom configuration filename, the overlay uses the same filename stem and extension.
+`ScriptsToMarkAsExecuted` replaces the inherited selection when specified in an environment file or environment variables;
+use `[]` in `appsettings.Local.json` to clear a baseline selection inherited from the base file.
 JSON paths are relative to the file; argument and environment paths are relative to the working directory.
-Use environment variables such as `ConnectionStrings__DefaultConnection`, `DatabaseMigrations__ScriptsPath`, and `DatabaseMigrations__BaseNamespace`.
+Use environment variables such as `ConnectionStrings__DefaultConnection` and `DatabaseMigrations__ScriptsPath`.
 `EnsureDatabase` defaults to `true`; use `--ensure-database false` for an existing database. See `<command> --help` for all options.
 
 `--output json` emits one result on stdout; diagnostics go to stderr.
@@ -103,7 +109,7 @@ After checkout and .NET 10 setup, restore the pinned tool and run migrations bef
 - name: Apply migrations
   env:
     ConnectionStrings__DefaultConnection: ${{ secrets.DATABASE_CONNECTION_STRING }}
-  run: dotnet tool run jjdbup migrate --scripts ./Database --base-namespace Order.Api.Database --ensure-database false --output json
+  run: dotnet tool run jjdbup migrate --scripts ./Database --ensure-database false --output json
 ```
 
 Provision the database first when using `--ensure-database false`. Run one migration job per database at a time.
@@ -117,9 +123,9 @@ Install `JJConsulting.DbUp`. The library reads the same options as the CLI:
 using JJConsulting.DbUp;
 using JJConsulting.DbUp.Configuration;
 
-DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, "Order.Api.Database");
+DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly);
 
-var options = new DbUpOptions { BaseNamespace = "Order.Api.Database", ScriptsPath = "Database" };
+var options = new DbUpOptions { ScriptsPath = "Database" };
 
 DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, options);
 ```

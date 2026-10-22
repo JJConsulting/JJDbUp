@@ -21,8 +21,7 @@ public sealed partial class DatabaseMigratorTests
             {
                 using var output = new StringWriter();
                 using var error = new StringWriter();
-                var code = CliApplication.Run([command, "--scripts", root, "--base-namespace", "TestScripts",
-                    "--connection-string", ConnectionString, "--output", "json", .. extra], output, error, root, []);
+                var code = CliApplication.Run([command, "--scripts", root, "--connection-string", ConnectionString, "--output", "json", .. extra], output, error, root, []);
                 Assert.DoesNotContain(ConnectionString, output.ToString() + error);
                 return (code, JsonDocument.Parse(output.ToString()), error.ToString());
             }
@@ -73,7 +72,7 @@ public sealed partial class DatabaseMigratorTests
         using var output = new StringWriter();
         using var error = new StringWriter();
         var code = CliApplication.Run(["migrate", "--assembly", typeof(DatabaseMigratorTests).Assembly.Location,
-            "--base-namespace", "TestScripts", "--connection-string", ConnectionString], output, error, environment: []);
+            "--connection-string", ConnectionString], output, error, environment: []);
         Assert.True(code == 0, output.ToString() + error.ToString());
         Assert.Equal("Order", Scalar<string>("SELECT Name FROM ItemNames"));
     }
@@ -89,7 +88,7 @@ public sealed partial class DatabaseMigratorTests
             using var output = new StringWriter();
             using var error = new StringWriter();
             var code = CliApplication.Run(["baseline", "InitialSchema", "--scripts", root,
-                "--base-namespace", "TestScripts", "--connection-string", ConnectionString, "--output", "json"], output, error,
+                "--connection-string", ConnectionString, "--output", "json"], output, error,
                 Path.GetTempPath(), []);
             Assert.True(code == 0, output.ToString() + error);
             Assert.Contains("ManualTable", File.ReadAllText(Path.Combine(root, "Migrations", "InitialSchema.sql")));
@@ -116,8 +115,7 @@ public sealed partial class DatabaseMigratorTests
             {
                 using var output = new StringWriter();
                 using var error = new StringWriter();
-                string[] args = ["baseline", "B001_Initial.sql", "--scripts", root, "--base-namespace", "TestScripts",
-                    "--connection-string", ConnectionString, "--output", "json"];
+                string[] args = ["baseline", "B001_Initial.sql", "--scripts", root, "--connection-string", ConnectionString, "--output", "json"];
                 var code = CliApplication.Run(flag.Length == 0 ? args : [.. args, flag], output, error, root, []);
                 Assert.True(code == 0, output.ToString() + error);
                 using var json = JsonDocument.Parse(output.ToString());

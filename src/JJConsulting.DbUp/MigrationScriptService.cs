@@ -23,6 +23,15 @@ public static class MigrationScriptService
             return MigrationScriptResult.Failed("The scripts directory does not exist.");
 
         var directory = options.ScriptsPath;
+        string prefix;
+        try
+        {
+            prefix = ScriptIdentity.DirectoryPrefix(directory);
+        }
+        catch (InvalidDataException exception)
+        {
+            return MigrationScriptResult.Failed(exception.Message);
+        }
 
         // Let DbUp discover and read scripts; retain the namespace used by existing journals.
         var provider = new FileSystemScriptProvider(directory, new FileSystemScriptOptions
@@ -40,9 +49,9 @@ public static class MigrationScriptService
         });
         var scripts = provider.GetScripts(null)
             .Select(script =>
-                new SqlScript(options.BaseNamespace + "." + script.Name, script.Contents, script.SqlScriptOptions));
+                new SqlScript(prefix + "." + script.Name, script.Contents, script.SqlScriptOptions));
 
-        return GetScriptsWithValidatedOptions(scripts, options);
+        return GetScriptsWithValidatedOptions(scripts, options, prefix);
     }
 
     /// <summary>Loads and validates embedded scripts; ScriptsPath is ignored.</summary>
@@ -55,7 +64,7 @@ public static class MigrationScriptService
             return MigrationScriptResult.Failed(error);
 
         var provider = new EmbeddedScriptProvider(assembly, name =>
-            IsScript(name, options.MigrationsPrefix) || IsScript(name, options.ProgrammableObjectsPrefix));
+            IsScript(name, "Migrations") || IsScript(name, "ProgrammableObjects"));
         var scripts = provider.GetScripts(null);
 
         return GetScriptsWithValidatedOptions(scripts, options);
@@ -73,17 +82,17 @@ public static class MigrationScriptService
     }
 
     private static MigrationScriptResult GetScriptsWithValidatedOptions(IEnumerable<SqlScript> scripts,
-        DbUpOptions options)
+        DbUpOptions options, string? directoryPrefix = null)
     {
         var all = scripts.ToArray();
-        var migrations = all.Where(s => IsScript(s.Name, options.MigrationsPrefix))
+        var migrations = all.Where(s => ScriptIdentity.RelativeName(s.Name, "Migrations", directoryPrefix) is not null)
             .OrderBy(s => s.Name, StringComparer.Ordinal).ToArray();
-        var objects = all.Where(s => IsScript(s.Name, options.ProgrammableObjectsPrefix))
+        var objects = all.Where(s => ScriptIdentity.RelativeName(s.Name, "ProgrammableObjects", directoryPrefix) is not null)
             .OrderBy(s => s.Name, StringComparer.Ordinal).ToArray();
 
         if (migrations.Length == 0 && objects.Length == 0)
             return MigrationScriptResult.Failed(
-                "No SQL scripts were found under the configured migration or programmable object prefixes.");
+                "No SQL scripts were found under Migrations or ProgrammableObjects.");
         if (migrations.Concat(objects).GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
             return MigrationScriptResult.Failed("Duplicate SQL script names were found.");
 
@@ -103,11 +112,11 @@ public static class MigrationScriptService
         var selected = new HashSet<string>(StringComparer.Ordinal);
         foreach (var name in options.ScriptsToMarkAsExecuted)
         {
-            var fullName = options.MigrationsPrefix + name;
-            if (string.IsNullOrWhiteSpace(name) || migrations.All(s => s.Name != fullName))
+            var matches = migrations.Where(s => ScriptIdentity.RelativeName(s.Name, "Migrations", directoryPrefix) == name).ToArray();
+            if (string.IsNullOrWhiteSpace(name) || matches.Length != 1)
                 return MigrationScriptResult.Failed(
-                    "A selected migration was not found under the configured migrations prefix.");
-            selected.Add(fullName);
+                    "A selected migration was not found or its relative name is ambiguous.");
+            selected.Add(matches[0].Name);
         }
 
         var scriptsToMark = migrations.Where(s => selected.Contains(s.Name)).ToArray();
@@ -119,16 +128,12 @@ public static class MigrationScriptService
         });
     }
 
-    private static bool IsScript(string name, string prefix) =>
-        name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
-        name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase);
+    private static bool IsScript(string name, string category) => ScriptIdentity.RelativeName(name, category) is not null;
 
     private static string? ValidateOptions(DbUpOptions? options)
     {
         if (options is null)
             return "Migration options are required.";
-        if (string.IsNullOrWhiteSpace(options.BaseNamespace))
-            return "BaseNamespace is required.";
         if (string.IsNullOrWhiteSpace(options.Schema))
             return "Schema is required.";
         if (string.IsNullOrWhiteSpace(options.MigrationJournal))

@@ -9,8 +9,6 @@ public sealed class DbUpOptions
 
     public string? ScriptsPath { get; set; }
 
-    public string BaseNamespace { get; set; } = string.Empty;
-
     public string Schema { get; set; } = "dbo";
 
     public string MigrationJournal { get; set; } = "SchemaVersions";
@@ -21,10 +19,6 @@ public sealed class DbUpOptions
 
     public bool EnsureDatabase { get; set; } = true;
 
-    // Nomes relativos a MigrationsPrefix, incluindo .sql. Use somente para scripts ja aplicados.
+    // Nomes relativos a pasta Migrations, incluindo .sql. Use somente para scripts ja aplicados.
     public string[] ScriptsToMarkAsExecuted { get; set; } = [];
-
-    public string MigrationsPrefix => BaseNamespace + ".Migrations.";
-
-    public string ProgrammableObjectsPrefix => BaseNamespace + ".ProgrammableObjects.";
 }
