@@ -4,6 +4,9 @@ public sealed class DbUpOptions
 {
     public const string SectionName = "DatabaseMigrations";
 
+    /// <summary>Configuration key read by the CLI to resolve the database connection string.</summary>
+    public string ConnectionStringKey { get; set; } = "ConnectionStrings:DefaultConnection";
+
     public string? ScriptsPath { get; set; }
 
     public string BaseNamespace { get; set; } = string.Empty;
