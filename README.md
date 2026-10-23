@@ -66,6 +66,8 @@ If the scripts live in a separate project, pass that project's assembly instead 
 
 You can also call `DatabaseMigrator.Migrate(connectionString, assembly, baseNamespace)` without configuration binding. `DbUpOptions` additionally supports `Schema`, `MigrationJournal`, `ProgrammableObjectJournal`, and `DependencyDirective`.
 
+DbUp verifies the configured `Schema` before executing scripts. Before baseline adoption, the library explicitly calls DbUp's `VerifySchema()` and then `MarkAsExecuted()`, without executing the baseline SQL. `EnsureDatabase` controls database creation only. The connection user must have permission to create the schema when it does not exist.
+
 ## Example scripts
 
 `Database/Migrations/V001_CreateOrder.sql`:

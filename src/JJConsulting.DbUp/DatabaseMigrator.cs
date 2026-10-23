@@ -47,6 +47,14 @@ public static class DatabaseMigrator
 
         if (scriptsToMark.Count > 0)
         {
+            // MarkAsExecuted skips DbUp's normal schema verification.
+            var configuration = DeployChanges.To.SqlDatabase(connectionString, options.Schema)
+                .WithScripts(Array.Empty<SqlScript>()).LogToConsole().BuildConfiguration();
+            using (configuration.ConnectionManager.OperationStarting(configuration.Log, []))
+            {
+                configuration.ScriptExecutor.VerifySchema();
+            }
+
             // Seleciona somente os scripts informados; os demais continuam pendentes.
             var result = BuildMigrationsUpgrader(connectionString, scriptAssembly, options, scriptsToMark)
                 .MarkAsExecuted();
@@ -149,7 +157,8 @@ public static class DatabaseMigrator
     {
         return DeployChanges.To
             .SqlDatabase(
-                connectionString)
+                connectionString,
+                options.Schema)
             .WithScriptsEmbeddedInAssembly(
                 scriptAssembly,
                 scriptName =>
@@ -171,7 +180,7 @@ public static class DatabaseMigrator
         DbUpOptions options)
     {
         return DeployChanges.To
-            .SqlDatabase(connectionString)
+            .SqlDatabase(connectionString, options.Schema)
             .WithScriptsEmbeddedInAssembly(
                 scriptAssembly,
                 scriptName =>
