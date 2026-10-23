@@ -1,130 +1,25 @@
-# JJConsulting.DbUp
+# JJConsulting.DbUp.Migrations
 
-SQL Server migrations for .NET 10, powered by DbUp and DbUpX. Use the `jjdbup` CLI locally or in CI before deploying your application.
+A .NET 10 library that runs embedded SQL Server scripts with DbUp. It handles versioned migrations and programmable objects (functions, views, and procedures).
 
-## Scripts
+## Use it
+
+Reference `src/JJConsulting.DbUp/JJConsulting.DbUp.csproj`. Put the scripts in the consuming project:
 
 ```text
-Database/
-├── Migrations/
-│   ├── V001_CreateOrder.sql
-│   └── V002_AddStatus.sql
-└── ProgrammableObjects/
-    ├── Functions/fn_OrderTotal.sql
-    ├── Views/vw_Order.sql
-    └── Procedures/sp_GetOrder.sql
+Order.Api/
+├── Database/
+│   ├── Migrations/
+│   │   ├── V001_CreateOrder.sql
+│   │   └── V002_AddStatus.sql
+│   └── ProgrammableObjects/
+│       ├── Functions/fn_OrderTotal.sql
+│       ├── Views/vw_Order.sql
+│       └── Procedures/sp_GetOrder.sql
+└── Order.Api.csproj
 ```
 
-| Folder | Behavior |
-|---|---|
-| `Migrations` | SQL scripts run once per name, in ordinal filename order. |
-| `ProgrammableObjects` | Runs when new or changed by content hash. Edit the existing file; use `CREATE OR ALTER`. |
-
-Migration filenames are unrestricted. Use sortable names such as `001_CreateTable.sql` and
-`002_AddStatus.sql` to define execution order.
-
-Migrations run first. When migrations run, **all programmable objects are reapplied**. Otherwise, unchanged objects are skipped.
-Declare object dependencies with `-- #requires fn_OrderTotal, vw_Order`, using filenames without `.sql`.
-
-## CLI
-
-Install as a local .NET tool and commit `.config/dotnet-tools.json`:
-
-```sh
-dotnet new tool-manifest
-dotnet tool install JJConsulting.DbUp.Cli --version 1.0.0
-dotnet tool run jjdbup --help
-```
-
-For a global installation: `dotnet tool install --global JJConsulting.DbUp.Cli`.
-The commands below use `jjdbup`; for a local tool, prefix them with `dotnet tool run`.
-
-Run from your project or scripts directory without specifying a source:
-
-```sh
-jjdbup validate
-jjdbup new V003_AddStatus
-jjdbup migrate
-```
-
-For explicit configuration, use `appsettings.json`:
-
-```json
-{
-  "MyApplication": {
-    "DefaultConnection": "Server=localhost;Database=OrderDb;Integrated Security=True;TrustServerCertificate=True"
-  },
-  "DatabaseMigrations": {
-    "ConnectionStringKey": "MyApplication:DefaultConnection",
-    "BaseNamespace": "Order.Api.Database",
-    "ScriptsPath": "Database",
-    "EnsureDatabase": true
-  }
-}
-```
-
-`BaseNamespace` retains its existing behavior: script names must start with `<BaseNamespace>.Migrations.` or `<BaseNamespace>.ProgrammableObjects.`.
-Folder scripts use that same prefix. Keep it unchanged to preserve migration history.
-
-| Command | Purpose |
-|---|---|
-| `jjdbup baseline 001_InitialState` | Export the current schema as a regular migration. |
-| `jjdbup baseline 001_InitialState --dry-run` | Extract and validate, showing the destination without changing files or the database. |
-| `jjdbup new V003_AddStatus` | Create a migration file without overwriting existing files. |
-| `jjdbup new Views/vw_Order --type object` | Create a programmable object file. |
-| `jjdbup validate` | Check script names and dependencies offline; does not validate SQL syntax. |
-| `jjdbup status` | List pending scripts without changing the database. |
-| `jjdbup migrate` | Apply pending migrations and changed objects. |
-| `jjdbup mark-executed --script V001_CreateOrder.sql` | Record an already applied migration without executing SQL. Repeat `--script` for multiple files. |
-
-Configuration priority: **arguments → environment → JSON → defaults**. Use `--config <file>` to select another JSON file.
-JSON paths are relative to the file; argument and environment paths are relative to the working directory.
-Use environment variables such as `ConnectionStrings__DefaultConnection`, `DatabaseMigrations__ScriptsPath`, and `DatabaseMigrations__BaseNamespace`.
-`EnsureDatabase` defaults to `true`; use `--ensure-database false` for an existing database. See `<command> --help` for all options.
-
-`--output json` emits one result on stdout; diagnostics go to stderr.
-Exit codes: **0** success, **1** operational failure, **2** invalid input, **3** pending changes with `status --check`.
-
-## Baselines
-
-The `baseline` command exports the current database structure to a regular migration file:
-
-```sh
-jjdbup baseline 001_InitialState.sql
-```
-
-## CI
-
-After checkout and .NET 10 setup, restore the pinned tool and run migrations before deploying:
-
-```yaml
-- name: Restore migration tool
-  run: dotnet tool restore
-- name: Apply migrations
-  env:
-    ConnectionStrings__DefaultConnection: ${{ secrets.DATABASE_CONNECTION_STRING }}
-  run: dotnet tool run jjdbup migrate --scripts ./Database --base-namespace Order.Api.Database --ensure-database false --output json
-```
-
-Provision the database first when using `--ensure-database false`. Run one migration job per database at a time.
-Remove the application's startup migration call when moving execution to CI.
-
-## Library API
-
-Install `JJConsulting.DbUp`. The library reads the same options as the CLI:
-
-```csharp
-using JJConsulting.DbUp;
-using JJConsulting.DbUp.Configuration;
-
-DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, "Order.Api.Database");
-
-var options = new DbUpOptions { BaseNamespace = "Order.Api.Database", ScriptsPath = "Database" };
-
-DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, options);
-```
-
-For embedded resources, configure their build action:
+Embed them in `Order.Api.csproj`:
 
 ```xml
 <ItemGroup>
@@ -133,6 +28,103 @@ For embedded resources, configure their build action:
 </ItemGroup>
 ```
 
-Default journals: `dbo.SchemaVersions` and `dbo.ProgrammableObjectVersions`. Customize them through `Schema`, `MigrationJournal`, and `ProgrammableObjectJournal`.
-The configured `Schema` is also passed to DbUp’s SQL Server executor, which creates it natively if missing before executing pending scripts. Adoption verifies the same schema through DbUp before writing journal entries, because `MarkAsExecuted` skips the normal upgrade verification. `EnsureDatabase` controls only database creation. `GetStatus` does not create schemas or journals.
-Migrations and objects use separate transactions: an object failure does not roll back completed migrations. Script failures raise `DatabaseMigrationException`.
+The resource names must start with `<BaseNamespace>.Migrations.` or `<BaseNamespace>.ProgrammableObjects.` and end with `.sql`. For example, `Order.Api.Database.Migrations.V001_CreateOrder.sql` uses `Order.Api.Database` as its base namespace. Rebuild the application after changing SQL files.
+
+Set the connection and migration options in `appsettings.json`:
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Server=localhost;Database=OrderDb;Integrated Security=True;TrustServerCertificate=True"
+  },
+  "DatabaseMigrations": {
+    "BaseNamespace": "Order.Api.Database",
+    "EnsureDatabase": true,
+    "ScriptsToMarkAsExecuted": []
+  }
+}
+```
+
+Bind `DbUpOptions` through `IOptions` and migrate before the app starts serving requests:
+
+```csharp
+using JJConsulting.DbUp.Migrations;
+using JJConsulting.DbUp.Migrations.Configuration;
+using Microsoft.Extensions.Options;
+
+builder.Services.AddDbUpMigrations(builder.Configuration);
+var app = builder.Build();
+
+var options = app.Services.GetRequiredService<IOptions<DbUpOptions>>().Value;
+var connectionString = app.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("Connection string is missing.");
+DatabaseMigrator.Migrate(connectionString, typeof(Program).Assembly, options);
+app.Run();
+```
+
+If the scripts live in a separate project, pass that project's assembly instead of `typeof(Program).Assembly`.
+
+You can also call `DatabaseMigrator.Migrate(connectionString, assembly, baseNamespace)` without configuration binding. `DbUpOptions` additionally supports `Schema`, `MigrationJournal`, `ProgrammableObjectJournal`, and `DependencyDirective`.
+
+## Example scripts
+
+`Database/Migrations/V001_CreateOrder.sql`:
+
+```sql
+CREATE TABLE dbo.[Order] (
+    Id int IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    Total decimal(18,2) NOT NULL
+);
+```
+
+`Database/Migrations/V002_AddStatus.sql`:
+
+```sql
+ALTER TABLE dbo.[Order]
+ADD Status nvarchar(30) NOT NULL
+    CONSTRAINT DF_Order_Status DEFAULT N'Pending';
+```
+
+`Database/ProgrammableObjects/Functions/fn_OrderTotal.sql`:
+
+```sql
+CREATE OR ALTER FUNCTION dbo.fn_OrderTotal(@OrderId int)
+RETURNS decimal(18,2)
+AS
+BEGIN
+    RETURN (SELECT Total FROM dbo.[Order] WHERE Id = @OrderId);
+END;
+```
+
+`Database/ProgrammableObjects/Views/vw_Order.sql`:
+
+```sql
+-- #requires fn_OrderTotal
+CREATE OR ALTER VIEW dbo.vw_Order
+AS SELECT Id, Total, Status, dbo.fn_OrderTotal(Id) AS CurrentTotal
+FROM dbo.[Order];
+```
+
+`Database/ProgrammableObjects/Procedures/sp_GetOrder.sql`:
+
+```sql
+-- #requires vw_Order
+CREATE OR ALTER PROCEDURE dbo.sp_GetOrder @OrderId int
+AS
+BEGIN
+    SELECT Id, Total, Status FROM dbo.vw_Order WHERE Id = @OrderId;
+END;
+```
+
+`#requires` is the default dependency directive. `-- #requires fn_OrderTotal` makes DbUpX run the function before the view; `-- #requires vw_Order` runs the view before the procedure. Use the dependency script's filename without `.sql`. For multiple dependencies, separate names with commas.
+
+## Execution order
+
+1. Create the database when `EnsureDatabase` is `true`.
+2. Record any `ScriptsToMarkAsExecuted` without running them. Use this only for migrations already applied to the target database.
+3. Run pending migrations once, tracked by name in `dbo.SchemaVersions` by default.
+4. When migrations ran, clear the programmable object journal, then run objects in dependency order. Their hashes are tracked in `dbo.ProgrammableObjectVersions` by default.
+
+The two upgrade stages use separate transactions. A programmable object failure does not roll back completed migrations. Script failures raise `DatabaseMigrationException` with the stage and script name when available.
+
+Add new numbered migration files for later schema changes; applied migrations are not rerun when edited. Programmable objects should be safe to run again. If an existing database already has a migration's changes, list its filename in `ScriptsToMarkAsExecuted` to record it without executing it.

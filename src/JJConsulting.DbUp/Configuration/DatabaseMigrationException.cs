@@ -1,4 +1,4 @@
-﻿namespace JJConsulting.DbUp.Exceptions;
+﻿namespace JJConsulting.DbUp.Configuration;
 
 public sealed class DatabaseMigrationException(
     string stage,

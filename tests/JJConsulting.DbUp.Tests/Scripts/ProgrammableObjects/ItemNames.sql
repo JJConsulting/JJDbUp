@@ -1,1 +1,0 @@
-CREATE OR ALTER VIEW ItemNames AS SELECT Name FROM dbo.Items;
