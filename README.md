@@ -80,7 +80,8 @@ Keep project namespaces, resource names and script locations stable to preserve 
 
 Configuration priority: **arguments → environment → JSON → defaults**. Use `--config <file>` to select another JSON file.
 The CLI overlays `appsettings.{environment}.json` from the same directory on `appsettings.json`.
-The environment is selected by `DOTNET_ENVIRONMENT`, then `ASPNETCORE_ENVIRONMENT`, defaulting to `Production`.
+The environment is selected by `DOTNET_ENVIRONMENT`, then `ASPNETCORE_ENVIRONMENT`.
+If neither has a nonempty value, only the selected base JSON file is loaded; the CLI never assumes `Production`.
 The environment file is optional. With a custom configuration filename, the overlay uses the same filename stem and extension.
 `ScriptsToMarkAsExecuted` replaces the inherited selection when specified in an environment file or environment variables;
 use `[]` in `appsettings.Local.json` to clear a baseline selection inherited from the base file.

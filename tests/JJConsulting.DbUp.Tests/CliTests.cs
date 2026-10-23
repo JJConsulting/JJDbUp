@@ -120,14 +120,20 @@ public sealed class CliTests : IDisposable
     [InlineData("Local", "Homolog", "Local")]
     [InlineData(null, "Homolog", "Homolog")]
     [InlineData(" ", "Homolog", "Homolog")]
-    [InlineData(null, null, "Production")]
-    public void Configuration_EnvironmentSelectionUsesDotnetThenAspNetThenProduction(string? dotnet, string? aspnet, string expected)
+    [InlineData("Production", null, "Production")]
+    [InlineData(null, null, "Base")]
+    [InlineData("", "", "Base")]
+    [InlineData(" ", " ", "Base")]
+    public void Configuration_EnvironmentSelectionUsesDotnetThenAspNetAndOtherwiseOnlyBase(string? dotnet, string? aspnet, string expected)
     {
         foreach (var name in new[] { "Local", "Homolog", "Production" })
             File.WriteAllText(Path.Combine(_directory, $"appsettings.{name}.json"),
                 JsonSerializer.Serialize(new { JJMasterData = new { ConnectionString = name } }));
         File.WriteAllText(Path.Combine(_directory, "appsettings.json"),
-            """{"DatabaseMigrations":{"ConnectionStringKey":"JJMasterData:ConnectionString"}}""");
+            """
+            {"DatabaseMigrations":{"ConnectionStringKey":"JJMasterData:ConnectionString"},
+             "JJMasterData":{"ConnectionString":"Base"}}
+            """);
 
         var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, new Dictionary<string, string?>
         {
@@ -239,8 +245,22 @@ public sealed class CliTests : IDisposable
     public void Configuration_InvalidEnvironmentJsonFailsInsteadOfUsingBaseConnection()
     {
         File.WriteAllText(Path.Combine(_directory, "appsettings.Production.json"), "{ invalid json");
-        var result = Run("validate", "--scripts", Scripts());
-        Assert.Equal(2, result.Code);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var code = CliApplication.Run(["validate", "--scripts", Scripts()], output, error, _directory,
+            new Dictionary<string, string?> { ["DOTNET_ENVIRONMENT"] = "Production" });
+        Assert.Equal(2, code);
+    }
+
+    [Fact]
+    public void Configuration_NoEnvironmentDoesNotReadProductionJson()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.Production.json"), "{ invalid json");
+        var result = Run("validate", "--scripts", Scripts(), "--output", "json");
+        Assert.Equal(0, result.Code);
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.Equal(1, json.RootElement.GetProperty("data").GetProperty("scriptCount").GetInt32());
+        Assert.Empty(result.Error);
     }
 
     [Theory]
