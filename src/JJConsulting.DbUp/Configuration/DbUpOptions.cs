@@ -22,4 +22,6 @@ public sealed class DbUpOptions
     public string MigrationsPrefix => BaseNamespace + ".Migrations.";
 
     public string ProgrammableObjectsPrefix => BaseNamespace + ".ProgrammableObjects.";
+
+    public string ConnectionString { get; set; } = "";
 }

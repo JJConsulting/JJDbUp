@@ -3,31 +3,28 @@ using DbUp.Engine;
 using DbUpX;
 using JJConsulting.DbUp.Configuration;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Options;
 using System.Reflection;
 
 namespace JJConsulting.DbUp;
 
-public static class DatabaseMigrator
+public class DatabaseMigrator (IOptions<DbUpOptions> options)
 {
-    public static void Migrate(
-        string connectionString,
-        Assembly scriptAssembly,
-        string baseNamespace)
+    public void Migrate(Assembly assembly)
     {
-        var options = new DbUpOptions
-        {
-            BaseNamespace = baseNamespace
-        };
+        Migrate(assembly, options.Value);
+    }
 
-        Migrate(connectionString, scriptAssembly, options);
+    public void Migrate()
+    {
+        Migrate(Assembly.GetCallingAssembly(), options.Value);
     }
 
     public static void Migrate(
-        string connectionString,
         Assembly scriptAssembly,
         DbUpOptions options)
     {
-        ValidateOptions(connectionString, scriptAssembly, options);
+        ValidateOptions(scriptAssembly, options);
         ValidateScripts(scriptAssembly, options);
 
         var scriptsToMark = ResolveScriptsToMark(scriptAssembly, options);
@@ -38,7 +35,7 @@ public static class DatabaseMigrator
 
         if (options.EnsureDatabase)
         {
-            EnsureDatabase.For.SqlDatabase(connectionString);
+            EnsureDatabase.For.SqlDatabase(options.ConnectionString);
         }
 
         // =================================================
@@ -48,7 +45,7 @@ public static class DatabaseMigrator
         if (scriptsToMark.Count > 0)
         {
             // MarkAsExecuted skips DbUp's normal schema verification.
-            var configuration = DeployChanges.To.SqlDatabase(connectionString, options.Schema)
+            var configuration = DeployChanges.To.SqlDatabase(options.ConnectionString, options.Schema)
                 .WithScripts(Array.Empty<SqlScript>()).LogToConsole().BuildConfiguration();
             using (configuration.ConnectionManager.OperationStarting(configuration.Log, []))
             {
@@ -56,7 +53,7 @@ public static class DatabaseMigrator
             }
 
             // Seleciona somente os scripts informados; os demais continuam pendentes.
-            var result = BuildMigrationsUpgrader(connectionString, scriptAssembly, options, scriptsToMark)
+            var result = BuildMigrationsUpgrader(scriptAssembly, options, scriptsToMark)
                 .MarkAsExecuted();
             if (!result.Successful)
             {
@@ -68,7 +65,7 @@ public static class DatabaseMigrator
         }
 
         var migrationsUpgrader =
-            BuildMigrationsUpgrader(connectionString, scriptAssembly, options);
+            BuildMigrationsUpgrader(scriptAssembly, options);
 
         /*
          * Precisamos verificar antes do PerformUpgrade.
@@ -91,7 +88,7 @@ public static class DatabaseMigrator
         if (hasPendingMigrations)
         {
             ClearProgrammableObjectJournal(
-                connectionString,
+                options.ConnectionString,
                 options.Schema,
                 options.ProgrammableObjectJournal);
         }
@@ -101,7 +98,7 @@ public static class DatabaseMigrator
         // =================================================
 
         var programmableObjectsUpgrader =
-            BuildProgrammableObjectsUpgrader(connectionString, scriptAssembly, options);
+            BuildProgrammableObjectsUpgrader(scriptAssembly, options);
 
         UpgradeOrThrow(
             programmableObjectsUpgrader,
@@ -150,14 +147,13 @@ public static class DatabaseMigrator
     }
 
     private static UpgradeEngine BuildMigrationsUpgrader(
-        string connectionString,
         Assembly scriptAssembly,
         DbUpOptions options,
         HashSet<string>? scriptsToMark = null)
     {
         return DeployChanges.To
             .SqlDatabase(
-                connectionString,
+                options.ConnectionString,
                 options.Schema)
             .WithScriptsEmbeddedInAssembly(
                 scriptAssembly,
@@ -175,12 +171,11 @@ public static class DatabaseMigrator
     }
 
     private static UpgradeEngine BuildProgrammableObjectsUpgrader(
-        string connectionString,
         Assembly scriptAssembly,
         DbUpOptions options)
     {
         return DeployChanges.To
-            .SqlDatabase(connectionString, options.Schema)
+            .SqlDatabase(options.ConnectionString, options.Schema)
             .WithScriptsEmbeddedInAssembly(
                 scriptAssembly,
                 scriptName =>
@@ -324,7 +319,6 @@ public static class DatabaseMigrator
     }
 
     private static void ValidateOptions(
-        string connectionString,
         Assembly scriptAssembly,
         DbUpOptions options)
     {
@@ -334,11 +328,11 @@ public static class DatabaseMigrator
                 nameof(options));
         }
 
-        if (string.IsNullOrWhiteSpace(connectionString))
+        if (string.IsNullOrWhiteSpace(options.ConnectionString))
         {
             throw new ArgumentException(
                 "Connection string is required.",
-                nameof(connectionString));
+                nameof(options.ConnectionString));
         }
 
         if (scriptAssembly == null)
