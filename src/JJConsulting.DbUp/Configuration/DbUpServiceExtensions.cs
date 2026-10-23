@@ -7,11 +7,10 @@ public static class DbUpServiceExtensions
 {
     extension(IServiceCollection services)
     {
-        public IServiceCollection AddDbUpMigrations(IConfiguration configuration)
+        public IServiceCollection AddDbUpMigrations()
         {
             services.AddSingleton<DatabaseMigrator>();
-            services.AddOptions<DbUpOptions>().Bind(configuration.GetSection(DbUpOptions.SectionName));
-
+            services.AddOptions<DbUpOptions>().BindConfiguration(DbUpOptions.SectionName);
             return services;
         }
     }

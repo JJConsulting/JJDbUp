@@ -16,8 +16,7 @@ public sealed class DbUpOptions
 
     public bool EnsureDatabase { get; set; } = true;
 
-    // Nomes relativos a MigrationsPrefix, incluindo .sql. Use somente para scripts ja aplicados.
-    public string[] ScriptsToMarkAsExecuted { get; set; } = [];
+    public string[]? ScriptsToMarkAsExecuted { get; set; }
 
     public string MigrationsPrefix => BaseNamespace + ".Migrations.";
 

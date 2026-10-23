@@ -107,13 +107,11 @@ public class DatabaseMigrator (IOptions<DbUpOptions> options)
 
     private static HashSet<string> ResolveScriptsToMark(Assembly scriptAssembly, DbUpOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options.ScriptsToMarkAsExecuted);
-
         var resources = new HashSet<string>(
             scriptAssembly.GetManifestResourceNames(), StringComparer.Ordinal);
         var selected = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var name in options.ScriptsToMarkAsExecuted)
+        foreach (var name in options.ScriptsToMarkAsExecuted ?? [])
         {
             var resourceName = options.MigrationsPrefix + name;
             if (string.IsNullOrWhiteSpace(name)
