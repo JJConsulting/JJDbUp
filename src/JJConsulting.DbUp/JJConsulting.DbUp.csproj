@@ -1,30 +1,22 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-	<PackageId>JJConsulting.DbUp</PackageId>
-	<Authors>JJConsulting</Authors>
-	<Description>SQL Server migrations and versionable database objects using DbUp and DbUpX.</Description>
-	<PackageReadmeFile>README.md</PackageReadmeFile>
-	<PackageProjectUrl>https://github.com/JJConsulting/JJMigrations</PackageProjectUrl>
-	<RepositoryUrl>https://github.com/JJConsulting/JJMigrations</RepositoryUrl>
-	<RepositoryType>git</RepositoryType>
-	<PackageTags>DbUp;SqlServer;Migrations</PackageTags>
-	<LangVersion>latest</LangVersion>
-	<NoWarn>$(NoWarn);NU1605;NU1902;NU1903</NoWarn>
+    <PackageId>JJConsulting.DbUp</PackageId>
+    <Authors>JJConsulting</Authors>
+    <Description>SQL Server migrations and versionable database objects using DbUp and DbUpX.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/JJConsulting/JJDbUp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
 	<ItemGroup>
 
 		<PackageReference Include="dbup-sqlserver" />
-        <PackageReference Include="Microsoft.SqlServer.SqlManagementObjects" />
-        <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" />
-        <PackageReference Include="DbUpX.Reborn" />
-		
-		<PackageReference Include="Microsoft.Extensions.Options" />
-		<PackageReference Include="Microsoft.Extensions.Configuration" />
+
+		<PackageReference Include="DbUpX.Reborn" />
+
+		<PackageReference Include="Microsoft.Data.SqlClient" />
 		<PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
 
 	</ItemGroup>
@@ -34,8 +26,6 @@
 	    <Link>README.md</Link>
 	  </Content>
 	</ItemGroup>
-  <ItemGroup>
-    <InternalsVisibleTo Include="JJConsulting.DbUp.Cli" />
-    <InternalsVisibleTo Include="JJConsulting.DbUp.Tests" />
-  </ItemGroup>
+
+
 </Project>
