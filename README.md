@@ -60,13 +60,14 @@ builder.Services.AddDbUpMigrations();
 
 var app = builder.Build();
 
-app.Services.GetRequiredService<DatabaseMigrator>()
-    .Migrate(typeof(Program).Assembly);
+app.Services.MigrateDatabase();
 
 app.Run();
 ```
 
 `AddDbUpMigrations()` registers `DatabaseMigrator` as a singleton and binds `DbUpOptions` using the host's `IConfiguration`. It takes no configuration argument. The connection string is read from `DatabaseMigrations:ConnectionString`; the library does not resolve `ConnectionStrings:DefaultConnection` automatically. With the host's default environment variable provider, use `DatabaseMigrations__ConnectionString` to supply it outside the JSON file.
+
+`MigrateDatabase()` uses the assembly that calls the extension method to locate embedded SQL scripts and passes it explicitly to the migrator. Call it from the project containing the scripts. The extension disables inlining to preserve the calling assembly in optimized builds.
 
 The instance overload `Migrate()` uses `Assembly.GetCallingAssembly()` and the injected `DbUpOptions`. Call it directly from the assembly containing the embedded scripts:
 

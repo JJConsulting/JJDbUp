@@ -1,5 +1,6 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace JJConsulting.DbUp.Configuration;
 
@@ -17,10 +18,11 @@ public static class DbUpServiceExtensions
 
     extension(IServiceProvider serviceProvider)
     {
+        [MethodImpl(MethodImplOptions.NoInlining)]
         public void MigrateDatabase()
         {
             var migrator = serviceProvider.GetRequiredService<DatabaseMigrator>();
-            migrator.Migrate();
+            migrator.Migrate(Assembly.GetCallingAssembly());
         }
     }
 
