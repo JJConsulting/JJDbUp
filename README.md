@@ -1,4 +1,4 @@
-# JJConsulting.DbUp
+# JJConsulting.DbUp.Migrations
 
 A .NET 10 library that runs embedded SQL Server scripts with DbUp. It handles versioned migrations and programmable objects (functions, views, and procedures).
 
