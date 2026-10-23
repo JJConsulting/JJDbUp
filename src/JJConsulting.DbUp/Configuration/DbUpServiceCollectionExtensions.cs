@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace JJConsulting.DbUp.Migrations.Configuration;
+namespace JJConsulting.DbUp.Configuration;
 
 public static class DbUpServiceCollectionExtensions
 {

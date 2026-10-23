@@ -1,11 +1,11 @@
 ﻿using DbUp;
 using DbUp.Engine;
 using DbUpX;
+using JJConsulting.DbUp.Configuration;
 using Microsoft.Data.SqlClient;
 using System.Reflection;
-using JJConsulting.DbUp.Migrations.Configuration;
 
-namespace JJConsulting.DbUp.Migrations;
+namespace JJConsulting.DbUp;
 
 public static class DatabaseMigrator
 {

@@ -1,4 +1,4 @@
-﻿namespace JJConsulting.DbUp.Migrations.Configuration;
+﻿namespace JJConsulting.DbUp.Configuration;
 
 public sealed class DbUpOptions
 {
