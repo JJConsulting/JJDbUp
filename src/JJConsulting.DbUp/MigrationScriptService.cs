@@ -63,8 +63,7 @@ public static class MigrationScriptService
         if (error is not null)
             return MigrationScriptResult.Failed(error);
 
-        var provider = new EmbeddedScriptProvider(assembly, name =>
-            IsScript(name, "Migrations") || IsScript(name, "ProgrammableObjects"));
+        var provider = new EmbeddedScriptProvider(assembly, ScriptIdentity.IsScript);
         var scripts = provider.GetScripts(null);
 
         return GetScriptsWithValidatedOptions(scripts, options);
@@ -81,13 +80,25 @@ public static class MigrationScriptService
             : GetScriptsWithValidatedOptions(scripts, options);
     }
 
-    private static MigrationScriptResult GetScriptsWithValidatedOptions(IEnumerable<SqlScript> scripts,
-        DbUpOptions options, string? directoryPrefix = null)
+    private static MigrationScriptResult GetScriptsWithValidatedOptions(IEnumerable<SqlScript> scripts, DbUpOptions options, string? directoryPrefix = null)
     {
         var all = scripts.ToArray();
-        var migrations = all.Where(s => ScriptIdentity.RelativeName(s.Name, "Migrations", directoryPrefix) is not null)
+        Dictionary<string, string>? prefixes = null;
+        if (directoryPrefix is null)
+        {
+            try
+            {
+                prefixes = ScriptIdentity.ResolvePrefixes(all.Select(script => script.Name));
+            }
+            catch (InvalidDataException exception)
+            {
+                return MigrationScriptResult.Failed(exception.Message);
+            }
+        }
+
+        var migrations = all.Where(s => RelativeName(s, "Migrations") is not null)
             .OrderBy(s => s.Name, StringComparer.Ordinal).ToArray();
-        var objects = all.Where(s => ScriptIdentity.RelativeName(s.Name, "ProgrammableObjects", directoryPrefix) is not null)
+        var objects = all.Where(s => RelativeName(s, "ProgrammableObjects") is not null)
             .OrderBy(s => s.Name, StringComparer.Ordinal).ToArray();
 
         if (migrations.Length == 0 && objects.Length == 0)
@@ -112,7 +123,7 @@ public static class MigrationScriptService
         var selected = new HashSet<string>(StringComparer.Ordinal);
         foreach (var name in options.ScriptsToMarkAsExecuted)
         {
-            var matches = migrations.Where(s => ScriptIdentity.RelativeName(s.Name, "Migrations", directoryPrefix) == name).ToArray();
+            var matches = migrations.Where(s => RelativeName(s, "Migrations") == name).ToArray();
             if (string.IsNullOrWhiteSpace(name) || matches.Length != 1)
                 return MigrationScriptResult.Failed(
                     "A selected migration was not found or its relative name is ambiguous.");
@@ -126,9 +137,13 @@ public static class MigrationScriptService
             ProgrammableObjects = objects,
             ScriptsToMark = scriptsToMark
         });
-    }
 
-    private static bool IsScript(string name, string category) => ScriptIdentity.RelativeName(name, category) is not null;
+        string? RelativeName(SqlScript script, string category)
+        {
+            var prefix = directoryPrefix ?? prefixes!.GetValueOrDefault(script.Name);
+            return prefix is null ? null : ScriptIdentity.RelativeName(script.Name, category, prefix);
+        }
+    }
 
     private static string? ValidateOptions(DbUpOptions? options)
     {

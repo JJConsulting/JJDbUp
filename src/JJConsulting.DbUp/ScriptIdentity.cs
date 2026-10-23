@@ -42,25 +42,53 @@ internal static class ScriptIdentity
         return new DirectoryInfo(fullPath).Name;
     }
 
-    public static string? RelativeName(string name, string category, string? directoryPrefix = null)
+    public static bool IsScript(string name) => CategoryPrefixes(name).Any();
+
+    public static Dictionary<string, string> ResolvePrefixes(IEnumerable<string> names)
+    {
+        var candidates = names.Distinct(StringComparer.Ordinal)
+            .SelectMany(CategoryPrefixes)
+            .ToArray();
+        // Unambiguous names and sibling categories establish the script roots.
+        var roots = candidates.GroupBy(candidate => candidate.Prefix, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Select(candidate => candidate.Category).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2)
+            .Select(group => group.Key)
+            .Concat(candidates.GroupBy(candidate => candidate.Name, StringComparer.Ordinal)
+                .Where(group => group.Count() == 1).Select(group => group.Single().Prefix))
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(prefix => prefix.Length).ToArray();
+        var prefixes = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var script in candidates.GroupBy(candidate => candidate.Name, StringComparer.Ordinal))
+        {
+            var root = roots.FirstOrDefault(prefix => script.Any(candidate =>
+                candidate.Prefix.Equals(prefix, StringComparison.OrdinalIgnoreCase)));
+            if (root is null && script.Count() > 1)
+                throw new InvalidDataException("The SQL script category is ambiguous. Use a scripts directory or unambiguous resource names.");
+            prefixes.Add(script.Key, root ?? script.Single().Prefix);
+        }
+        return prefixes;
+    }
+
+    public static string? RelativeName(string name, string category, string prefix)
     {
         if (!name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
             return null;
-        if (directoryPrefix is not null)
-        {
-            var prefix = directoryPrefix + "." + category + ".";
-            return name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? name[prefix.Length..] : null;
-        }
-        var index = CategoryIndex(name, category);
-        var otherCategory = category == "Migrations" ? "ProgrammableObjects" : "Migrations";
-        if (index < 0 || CategoryIndex(name, otherCategory) > index)
-            return null;
-        return name[(index + category.Length + 1)..];
+        var categoryPrefix = (prefix.Length == 0 ? "" : prefix + ".") + category + ".";
+        return name.StartsWith(categoryPrefix, StringComparison.OrdinalIgnoreCase) ? name[categoryPrefix.Length..] : null;
     }
 
-    private static int CategoryIndex(string name, string category)
+    private static IEnumerable<ScriptCategoryPrefix> CategoryPrefixes(string name)
     {
-        var index = name.LastIndexOf("." + category + ".", StringComparison.OrdinalIgnoreCase);
-        return index >= 0 ? index + 1 : name.StartsWith(category + ".", StringComparison.OrdinalIgnoreCase) ? 0 : -1;
+        if (!name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+            yield break;
+        var segments = name.Split('.');
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            var category = segments[index];
+            if (category.Equals("Migrations", StringComparison.OrdinalIgnoreCase) ||
+                category.Equals("ProgrammableObjects", StringComparison.OrdinalIgnoreCase))
+                yield return new ScriptCategoryPrefix(name, string.Join('.', segments[..index]), category);
+        }
     }
+
+    private sealed record ScriptCategoryPrefix(string Name, string Prefix, string Category);
 }

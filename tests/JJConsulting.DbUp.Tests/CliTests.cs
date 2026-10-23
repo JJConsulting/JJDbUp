@@ -195,6 +195,45 @@ public sealed class CliTests : IDisposable
         Assert.Equal(["Environment.sql"], settings.Migrations.ScriptsToMarkAsExecuted);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Configuration_EnvironmentSelectionReplacesEveryLowerPriorityArrayEntry(bool useEnvironmentFile)
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"ScriptsToMarkAsExecuted":["Base.sql","BaseExtra.sql"]}}
+            """);
+        if (useEnvironmentFile)
+            File.WriteAllText(Path.Combine(_directory, "appsettings.Local.json"), """
+                {"DatabaseMigrations":{"ScriptsToMarkAsExecuted":["Local.sql","LocalExtra.sql","LocalLast.sql"]}}
+                """);
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, new Dictionary<string, string?>
+        {
+            ["DOTNET_ENVIRONMENT"] = "Local",
+            ["DatabaseMigrations__ScriptsToMarkAsExecuted__0"] = "Environment.sql"
+        });
+
+        Assert.Equal(["Environment.sql"], settings.Migrations.ScriptsToMarkAsExecuted);
+    }
+
+    [Fact]
+    public void Configuration_AbsentSelectionInHigherLayersKeepsBaseSelection()
+    {
+        File.WriteAllText(Path.Combine(_directory, "appsettings.json"), """
+            {"DatabaseMigrations":{"ScriptsToMarkAsExecuted":["Base.sql","BaseExtra.sql"]}}
+            """);
+        File.WriteAllText(Path.Combine(_directory, "appsettings.Local.json"), """
+            {"DatabaseMigrations":{"Schema":"local_schema"}}
+            """);
+        var settings = DbUpOptionsLoader.Load(new DbUpCommandOptions(), _directory, new Dictionary<string, string?>
+        {
+            ["DOTNET_ENVIRONMENT"] = "Local",
+            ["DatabaseMigrations__EnsureDatabase"] = "false"
+        });
+
+        Assert.Equal(["Base.sql", "BaseExtra.sql"], settings.Migrations.ScriptsToMarkAsExecuted);
+    }
+
     [Fact]
     public void Configuration_CustomFilenameUsesEnvironmentOverlayBesideSelectedFile()
     {

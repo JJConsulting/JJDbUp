@@ -1,5 +1,7 @@
 using DbUp.Engine;
 using JJConsulting.DbUp.Configuration;
+using System.Reflection;
+using System.Text;
 
 namespace JJConsulting.DbUp.Tests;
 
@@ -109,6 +111,57 @@ public sealed class ScriptTests : IDisposable
         Assert.Equal(["App.Database.ProgrammableObjects.Migrations.Items.sql", "App.Database.ProgrammableObjects.Views.Items.sql"],
             result.Scripts.ProgrammableObjects.Select(script => script.Name));
         Assert.Equal("App.Database.Migrations.ProgrammableObjects.V002.sql", Assert.Single(result.Scripts.ScriptsToMark).Name);
+    }
+
+    [Theory]
+    [InlineData("App.Database")]
+    [InlineData("DomainData.Migrations.Database")]
+    [InlineData("DomainData.ProgrammableObjects.Database")]
+    public void AssemblyAndExplicitPreparation_PreserveNestedCategoriesAndAdoption(string prefix)
+    {
+        var resources = new Dictionary<string, string>
+        {
+            [prefix + ".Migrations.ProgrammableObjects.V002.sql"] = "SELECT 1;",
+            [prefix + ".ProgrammableObjects.Migrations.Items.sql"] = "SELECT 2;"
+        };
+        var options = new DbUpOptions { ScriptsToMarkAsExecuted = ["ProgrammableObjects.V002.sql"] };
+        var embedded = MigrationScriptService.GetScripts(new ScriptAssembly(resources), options);
+        var explicitScripts = MigrationScriptService.GetScripts(
+            resources.Select(resource => new SqlScript(resource.Key, resource.Value)), options);
+
+        foreach (var result in new[] { embedded, explicitScripts })
+        {
+            Assert.True(result.IsValid, result.Error);
+            Assert.Equal(prefix + ".Migrations.ProgrammableObjects.V002.sql", Assert.Single(result.Scripts.Migrations).Name);
+            Assert.Equal(prefix + ".ProgrammableObjects.Migrations.Items.sql", Assert.Single(result.Scripts.ProgrammableObjects).Name);
+            Assert.Equal(prefix + ".Migrations.ProgrammableObjects.V002.sql", Assert.Single(result.Scripts.ScriptsToMark).Name);
+        }
+    }
+
+    [Fact]
+    public void Preparation_UsesUnambiguousSiblingToResolveNestedMigrationCategories()
+    {
+        var result = MigrationScriptService.GetScripts(
+            [new SqlScript("App.Migrations.V001.sql", "SELECT 1;"),
+             new SqlScript("App.Migrations.Migrations.V002.sql", "SELECT 2;"),
+             new SqlScript("App.Migrations.ProgrammableObjects.V003.sql", "SELECT 3;")],
+            new DbUpOptions { ScriptsToMarkAsExecuted = ["Migrations.V002.sql"] });
+
+        Assert.True(result.IsValid, result.Error);
+        Assert.Equal(3, result.Scripts.Migrations.Count);
+        Assert.Empty(result.Scripts.ProgrammableObjects);
+        Assert.Equal("App.Migrations.Migrations.V002.sql", Assert.Single(result.Scripts.ScriptsToMark).Name);
+    }
+
+    [Theory]
+    [InlineData("App.Migrations.ProgrammableObjects.V002.sql")]
+    [InlineData("App.ProgrammableObjects.Migrations.Items.sql")]
+    [InlineData("App.Migrations.Migrations.V002.sql")]
+    public void AssemblyAndExplicitPreparation_RejectAmbiguousCategories(string name)
+    {
+        var resources = new Dictionary<string, string> { [name] = "SELECT 1;" };
+        AssertInvalid(MigrationScriptService.GetScripts(new ScriptAssembly(resources), new DbUpOptions()));
+        AssertInvalid(MigrationScriptService.GetScripts([new SqlScript(name, "SELECT 1;")], new DbUpOptions()));
     }
 
     [Fact]
@@ -258,4 +311,13 @@ public sealed class ScriptTests : IDisposable
     }
 
     public void Dispose() => Directory.Delete(_directory, true);
+
+    private sealed class ScriptAssembly(IReadOnlyDictionary<string, string> resources) : Assembly
+    {
+        public override string[] GetManifestResourceNames() => resources.Keys.ToArray();
+
+        public override Stream? GetManifestResourceStream(string name) => resources.TryGetValue(name, out var sql)
+            ? new MemoryStream(Encoding.UTF8.GetBytes(sql))
+            : null;
+    }
 }
