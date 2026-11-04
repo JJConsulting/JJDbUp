@@ -2,7 +2,6 @@
 using DbUp.Engine;
 using DbUpX;
 using JJConsulting.DbUp.Configuration;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 using System.Reflection;
 
@@ -67,34 +66,12 @@ public class DatabaseMigrator (IOptions<DbUpOptions> options)
         var migrationsUpgrader =
             BuildMigrationsUpgrader(scriptAssembly, options);
 
-        /*
-         * Precisamos verificar antes do PerformUpgrade.
-         *
-         * Se existir migration pendente, depois da
-         * execução vamos forçar todos os programmable
-         * objects a serem executados novamente.
-         */
-        var hasPendingMigrations =
-            migrationsUpgrader.IsUpgradeRequired();
-
         UpgradeOrThrow(
             migrationsUpgrader,
             "Migrations");
 
         // =================================================
-        // 2. FORCE PROGRAMMABLE OBJECTS
-        // =================================================
-
-        if (hasPendingMigrations)
-        {
-            ClearProgrammableObjectJournal(
-                options.ConnectionString,
-                options.Schema,
-                options.ProgrammableObjectJournal);
-        }
-
-        // =================================================
-        // 3. PROGRAMMABLE OBJECTS
+        // 2. PROGRAMMABLE OBJECTS
         // =================================================
 
         var programmableObjectsUpgrader =
@@ -209,70 +186,6 @@ public class DatabaseMigrator (IOptions<DbUpOptions> options)
             stage,
             scriptName,
             result.Error);
-    }
-
-    private static void ClearProgrammableObjectJournal(
-        string connectionString,
-        string schema,
-        string table)
-    {
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            throw new ArgumentException(
-                "Connection string is required.",
-                nameof(connectionString));
-        }
-
-        if (string.IsNullOrWhiteSpace(schema))
-        {
-            throw new ArgumentException(
-                "Schema is required.",
-                nameof(schema));
-        }
-
-        if (string.IsNullOrWhiteSpace(table))
-        {
-            throw new ArgumentException(
-                "Table is required.",
-                nameof(table));
-        }
-
-        var quotedSchema =
-            QuoteIdentifier(schema);
-
-        var quotedTable =
-            QuoteIdentifier(table);
-
-        var qualifiedTable =
-            quotedSchema + "." + quotedTable;
-
-        using var connection =
-            new SqlConnection(connectionString);
-        connection.Open();
-
-        var sql =
-            "IF OBJECT_ID(@objectName, N'U') IS NOT NULL " +
-            "BEGIN " +
-            "DELETE FROM " + qualifiedTable + "; " +
-            "END";
-
-        using (var command =
-               new SqlCommand(sql, connection))
-        {
-            command.Parameters.AddWithValue(
-                "@objectName",
-                schema + "." + table);
-
-            command.ExecuteNonQuery();
-        }
-    }
-
-    private static string QuoteIdentifier(
-        string identifier)
-    {
-        return "[" +
-               identifier.Replace("]", "]]") +
-               "]";
     }
 
     private static bool IsMigration(

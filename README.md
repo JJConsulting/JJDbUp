@@ -167,8 +167,7 @@ END;
 1. Create the database when `EnsureDatabase` is `true`.
 2. Record any `ScriptsToMarkAsExecuted` without running them. Use this only for migrations already applied to the target database.
 3. Run pending migrations once, tracked by name in `dbo.SchemaVersions` by default.
-4. When migrations ran, clear the programmable object journal to force all objects to run again.
-5. Run programmable objects in dependency order. Without pending migrations, hashing selects new or changed objects. Their hashes are tracked in `dbo.ProgrammableObjectVersions` by default.
+4. Run new or changed programmable objects in dependency order, selected by hash. Their hashes are tracked in `dbo.ProgrammableObjectVersions` by default. New migrations do not clear this journal or force unchanged objects to run again.
 
 The two upgrade stages use separate transactions. A programmable object failure does not roll back completed migrations. Script failures raise `DatabaseMigrationException` with the stage and script name when available.
 
@@ -189,7 +188,7 @@ Names are relative to `<BaseNamespace>.Migrations.`, include `.sql`, and must ma
 
 ## Validation and failures
 
-Before connecting, the migrator validates required options and checks that the supplied assembly contains at least one matching embedded SQL script. Failures reported by DbUp during adoption, migrations, or programmable object execution are wrapped in `DatabaseMigrationException`, exposing `Stage`, `ScriptName`, and `InnerException`. Validation and direct connection or journal maintenance errors can propagate separately.
+Before connecting, the migrator validates required options and checks that the supplied assembly contains at least one matching embedded SQL script. Failures reported by DbUp during adoption, migrations, or programmable object execution are wrapped in `DatabaseMigrationException`, exposing `Stage`, `ScriptName`, and `InnerException`. Validation and connection errors can propagate separately.
 
 ## Building from source
 
