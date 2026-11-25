@@ -158,7 +158,7 @@ public class DatabaseMigrator (IOptions<DbUpOptions> options)
                         scriptName,
                         options.ProgrammableObjectsPrefix))
             .WithScriptSorter(scripts =>
-                scripts.OrderByDependency(
+                scripts.ToList().OrderByDependency(
                     options.DependencyDirective))
             .LogToConsole()
             .JournalToSqlWithHashing(
