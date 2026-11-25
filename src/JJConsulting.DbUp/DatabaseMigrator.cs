@@ -2,7 +2,9 @@
 using DbUp.Engine;
 using DbUpX;
 using JJConsulting.DbUp.Configuration;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using System.Data;
 using System.Reflection;
 
 namespace JJConsulting.DbUp;
@@ -36,6 +38,8 @@ public class DatabaseMigrator (IOptions<DbUpOptions> options)
         {
             EnsureDatabase.For.SqlDatabase(options.ConnectionString);
         }
+
+        ValidateDefaultSchema(options);
 
         // =================================================
         // 1. MIGRATIONS
@@ -80,6 +84,29 @@ public class DatabaseMigrator (IOptions<DbUpOptions> options)
         UpgradeOrThrow(
             programmableObjectsUpgrader,
             "Programmable Objects");
+    }
+
+    private static void ValidateDefaultSchema(DbUpOptions options)
+    {
+        using var connection = new SqlConnection(options.ConnectionString);
+        connection.Open();
+
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT USER_NAME(), SCHEMA_NAME(),
+                CONVERT(bit, CASE WHEN SCHEMA_NAME() COLLATE DATABASE_DEFAULT = @Schema THEN 1 ELSE 0 END);
+            """;
+        command.Parameters.Add("@Schema", SqlDbType.NVarChar, -1).Value = options.Schema;
+
+        using var reader = command.ExecuteReader(CommandBehavior.SingleRow);
+        reader.Read();
+        if (reader.GetBoolean(2))
+            return;
+
+        var user = reader.GetString(0);
+        var defaultSchema = reader.IsDBNull(1) ? "undefined" : reader.GetString(1);
+        throw new InvalidOperationException(
+            $"Migrations blocked in database '{connection.Database}'. The default schema for user '{user}' is '{defaultSchema}', but DatabaseMigrations:Schema is '{options.Schema}'.");
     }
 
     private static HashSet<string> ResolveScriptsToMark(Assembly scriptAssembly, DbUpOptions options)

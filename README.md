@@ -125,6 +125,8 @@ The runner needs database access. A migration failure stops the job. Run one mig
 
 DbUp verifies the configured `Schema` before executing scripts. Before baseline adoption, the library explicitly calls DbUp's `VerifySchema()` and then `MarkAsExecuted()`, without executing the baseline SQL. `EnsureDatabase` controls database creation only. The connection user must have permission to create the schema when it does not exist.
 
+The connection user's effective default schema must match `Schema`. JJDbUp checks this before applying scripts or marking migrations as executed and reports both schema names if they differ.
+
 ## Example scripts
 
 `Database/Migrations/V001_CreateMyApp.sql`:
